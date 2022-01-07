@@ -426,11 +426,12 @@ size_t fill_in_packet_header_(
 
 bool parse_packet_(
     struct rte_mbuf *mbuf,  // the packet to parse.
-    const struct rte_ether_addr *our_eth,  // our local ethernet address, to compare eth_hdr.dst_addr to.
-    uint32_t our_ip,  // our local ip address, to compare ip_hdr.dst_addr to.
+    const struct rte_ether_addr *our_eth,  // our local ethernet address, to compare eth_hdr.dst_addr to
+    uint32_t our_ip,  // our local ip address, to compare ip_hdr.dst_addr to
+    struct rte_ether_addr *eth_src_addr, // out: the packet's ethernet source addr
     uint32_t *ip_src_addr, // out: the packet's ip source addr
-    uint16_t *udp_src_port, // out: the packet's udp src port.
-    uint16_t *udp_dst_port, // out: the packet's udp dst port.
+    uint16_t *udp_src_port, // out: the packet's udp src port
+    uint16_t *udp_dst_port, // out: the packet's udp dst port
     size_t *payload_len  // out: the length of the packet payload.
 ) {
     const struct rte_ether_addr ether_broadcast = {
@@ -475,6 +476,7 @@ bool parse_packet_(
         return false;
     }
 
+    *eth_src_addr = eth_hdr->s_addr;
     *ip_src_addr = rte_be_to_cpu_32(ip_hdr->src_addr);
     *udp_src_port = rte_be_to_cpu_16(udp_hdr->src_port);
     *udp_dst_port = rte_be_to_cpu_16(udp_hdr->dst_port);
@@ -576,7 +578,7 @@ void eth_dev_configure_(uint16_t port_id, uint16_t rx_rings, uint16_t tx_rings) 
     struct rte_eth_conf port_conf = {};
     port_conf.rxmode.max_rx_pkt_len = RX_PACKET_LEN;
 
-    port_conf.rxmode.offloads = DEV_RX_OFFLOAD_JUMBO_FRAME | DEV_RX_OFFLOAD_TIMESTAMP | DEV_RX_OFFLOAD_IPV4_CKSUM;
+    port_conf.rxmode.offloads = DEV_RX_OFFLOAD_JUMBO_FRAME | DEV_RX_OFFLOAD_IPV4_CKSUM;
     port_conf.rxmode.mq_mode = ETH_MQ_RX_RSS | ETH_MQ_RX_RSS_FLAG;
     port_conf.rx_adv_conf.rss_conf.rss_key = sym_rss_key;
     port_conf.rx_adv_conf.rss_conf.rss_key_len = 40;

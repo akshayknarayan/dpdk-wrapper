@@ -92,6 +92,7 @@ extern "C" {
         mbuf: *mut rte_mbuf,
         our_eth: *const rte_ether_addr,
         our_ip: u32,
+        src_eth: *mut rte_ether_addr,
         ip_src_addr: *mut u32,
         udp_src_port: *mut u16,
         udp_dst_port: *mut u16,
@@ -316,7 +317,8 @@ pub unsafe fn parse_packet(
     mbuf: *mut rte_mbuf,
     our_eth: *const rte_ether_addr,
     our_ip: u32,
-) -> (bool, u32, u16, u16, usize) {
+) -> (bool, rte_ether_addr, u32, u16, u16, usize) {
+    let mut src_ether_addr: std::mem::MaybeUninit<rte_ether_addr> = std::mem::MaybeUninit::zeroed();
     let mut src_ip = 0u32;
     let mut src_port = 0u16;
     let mut dst_port = 0u16;
@@ -325,12 +327,20 @@ pub unsafe fn parse_packet(
         mbuf,
         our_eth,
         our_ip,
+        src_ether_addr.as_mut_ptr(),
         &mut src_ip as _,
         &mut src_port as _,
         &mut dst_port as _,
         &mut payload_len as _,
     );
-    (valid, src_ip, src_port, dst_port, payload_len)
+    (
+        valid,
+        src_ether_addr.assume_init(),
+        src_ip,
+        src_port,
+        dst_port,
+        payload_len,
+    )
 }
 
 #[inline]
