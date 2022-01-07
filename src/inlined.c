@@ -383,7 +383,16 @@ uint32_t make_ip_(uint8_t a, uint8_t b, uint8_t c, uint8_t d) {
 	 ((uint32_t) c << 8) | (uint32_t) d);
 }
 
-size_t fill_in_packet_header_(struct rte_mbuf *mbuf, struct rte_ether_addr *my_eth, struct rte_ether_addr *dst_eth, uint32_t my_ip, uint32_t dst_ip, uint16_t client_port, uint16_t server_port, size_t message_size) {
+size_t fill_in_packet_header_(
+    struct rte_mbuf *mbuf, 
+    const struct rte_ether_addr *my_eth, 
+    const struct rte_ether_addr *dst_eth,
+    uint32_t my_ip,
+    uint32_t dst_ip,
+    uint16_t client_port,
+    uint16_t server_port,
+    size_t message_size
+) {
     size_t header_size = 0;
     uint8_t *ptr = rte_pktmbuf_mtod(mbuf, uint8_t *);
     struct rte_ether_hdr *eth_hdr = (struct rte_ether_hdr *)ptr;
@@ -425,7 +434,15 @@ size_t fill_in_packet_header_(struct rte_mbuf *mbuf, struct rte_ether_addr *my_e
     return header_size;
 }
 
-bool parse_packet_(struct rte_mbuf *mbuf, size_t *payload_len, const struct rte_ether_addr *our_eth, uint32_t our_ip) {
+bool parse_packet_(
+    struct rte_mbuf *mbuf,  // the packet to parse.
+    const struct rte_ether_addr *our_eth,  // our local ethernet address, to compare eth_hdr.dst_addr to.
+    uint32_t our_ip,  // our local ip address, to compare ip_hdr.dst_addr to.
+    uint32_t *ip_src_addr, // out: the packet's ip source addr
+    uint16_t *udp_src_port, // out: the packet's udp src port.
+    uint16_t *udp_dst_port, // out: the packet's udp dst port.
+    size_t *payload_len  // out: the length of the packet payload.
+) {
     const struct rte_ether_addr ether_broadcast = {
         .addr_bytes = {0xff, 0xff, 0xff, 0xff, 0xff, 0xff}
     };
@@ -459,15 +476,19 @@ bool parse_packet_(struct rte_mbuf *mbuf, size_t *payload_len, const struct rte_
     // In network byte order.
     if (ip_hdr->dst_addr != rte_cpu_to_be_32(our_ip)) {
         //printf("Bad dst ip addr; got: %u, expected: %u, our_ip in lE: %u\n", (unsigned)(ip_hdr->dst_addr), (unsigned)(rte_cpu_to_be_32(our_ip)), (unsigned)(our_ip));
-        return false;    
+        return false;
     }
+
 
     if (IPPROTO_UDP != ip_hdr->next_proto_id) {
         printf("Bad next proto_id\n");
         return false;
     }
 
-    *payload_len = mbuf->pkt_len - header_size;
+    *ip_src_addr = rte_be_to_cpu_32(ip_hdr->src_addr);
+    *udp_src_port = rte_be_to_cpu_16(udp_hdr->src_port);
+    *udp_dst_port = rte_be_to_cpu_16(udp_hdr->dst_port);
+    *payload_len = (size_t) (mbuf->pkt_len - header_size);
     // printf("[parse_packet_] Received packet with %u pkt_len, %u data_Len, %u header_size, set payload_len to %u\n", (unsigned)mbuf->pkt_len, (unsigned)mbuf->data_len, (unsigned)header_size, (unsigned)*payload_len);
     return true;
 }
@@ -646,101 +667,6 @@ void eth_dev_configure_(uint16_t port_id, uint16_t rx_rings, uint16_t tx_rings) 
 
     printf("port_id: %u, rx_rings; %u, tx_rings: %u\n", port_id, rx_rings, tx_rings);
     rte_eth_dev_configure(port_id, rx_rings, tx_rings, &port_conf);
-}
-
-int loop_in_c_(uint16_t port,
-               const struct rte_ether_addr * my_eth,
-               uint32_t my_ip,
-               struct rte_mbuf **rx_bufs,
-               struct rte_mbuf **tx_bufs, 
-               struct rte_mbuf **secondary_mbufs, 
-               struct rte_mempool *mbuf_pool, 
-               struct rte_mempool *header_mbuf_pool, 
-               struct rte_mempool *extbuf_mempool, 
-               size_t num_mbufs, 
-               size_t split_payload, 
-               bool zero_copy,
-               bool use_external, 
-               struct rte_mbuf_ext_shared_info *shinfo, 
-               void *ext_mem_addr) {
-    uint32_t burst_size = 32;
-
-    while (true) {
-        uint16_t num_received = rte_eth_rx_burst(port, 0, rx_bufs, burst_size);
-        size_t num_valid = 0;
-        for (size_t i = 0; i < (size_t)num_received; i++) {
-            size_t n_to_tx = i;
-            // check if packet is valid and what payload size is
-            size_t payload_length = 0;
-            if (!parse_packet_(rx_bufs[n_to_tx], &payload_length, my_eth, my_ip)) {
-                rte_pktmbuf_free(rx_bufs[n_to_tx]);
-                continue;
-            }
-            num_valid++;
-            size_t header_size = rx_bufs[n_to_tx]->pkt_len - payload_length;
-            
-            if (!use_external) {
-                if (num_mbufs == 2) {
-                    tx_bufs[n_to_tx] = rte_pktmbuf_alloc(header_mbuf_pool);
-                    secondary_mbufs[n_to_tx] = rte_pktmbuf_alloc(mbuf_pool);
-                    if (tx_bufs[n_to_tx] == NULL || secondary_mbufs[n_to_tx] == NULL) {
-                        printf("[loop_in_c_]: Not able to alloc tx_bufs[%u] or secondary_mbufs[%u]\n", (unsigned)i, (unsigned)i);
-                    }
-                } else if (num_mbufs == 1) {
-                    tx_bufs[n_to_tx] = rte_pktmbuf_alloc(mbuf_pool);
-                    printf("[loop_in_c_]: Not able to alloc tx_bufs[%u]\n", (unsigned)i);
-                } else {
-                    if (tx_bufs[n_to_tx] == NULL || secondary_mbufs[n_to_tx] == NULL) { 
-                        printf("[loop_in_c_]: Num mbufs cannot be anything other than 2 or 1: %u\n", (unsigned)num_mbufs);
-                    }
-                    exit(1);
-                }
-            } else {
-                if (num_mbufs == 2) {
-                    tx_bufs[n_to_tx] = rte_pktmbuf_alloc(mbuf_pool);
-                    secondary_mbufs[n_to_tx] = rte_pktmbuf_alloc(extbuf_mempool);
-                    if (tx_bufs[n_to_tx] == NULL || secondary_mbufs[n_to_tx] == NULL) {
-                        printf("[loop_in_c_]: Not able to alloc tx_bufs[%u] or extbuf_mempool[%u]\n", (unsigned)i, (unsigned)i);
-                    }
-                    rte_pktmbuf_attach_extbuf(secondary_mbufs[n_to_tx], ext_mem_addr, 0, payload_length + header_size, shinfo);
-                } else {
-                    printf("[loop_in_c_]: For external memory, loop_in_c_ only supports two mbufs.\n");
-                }
-            }
-            struct rte_mbuf *tx_buf = tx_bufs[n_to_tx];
-            struct rte_mbuf *rx_buf = rx_bufs[n_to_tx];
-            struct rte_mbuf *secondary_tx = secondary_mbufs[n_to_tx];
-
-            // switch headers and timestamps
-            switch_headers_(rx_buf, tx_buf, payload_length);
-            char *timestamp_rx = rte_pktmbuf_mtod_offset(rx_buf, char *, sizeof(struct rte_ether_hdr) + sizeof(struct rte_ipv4_hdr) + sizeof(struct rte_udp_hdr));
-            char *timestamp_tx = rte_pktmbuf_mtod_offset(tx_buf, char *, sizeof(struct rte_ether_hdr) + sizeof(struct rte_ipv4_hdr) + sizeof(struct rte_udp_hdr));
-            rte_memcpy(timestamp_tx, timestamp_rx, 8);
-
-            // add in mbuf metadata
-            if (num_mbufs == 2) {
-                tx_buf->next = secondary_tx;
-                tx_buf->data_len = rx_buf->pkt_len - payload_length + 8 + split_payload;
-                tx_buf->pkt_len = rx_buf->pkt_len;
-                secondary_tx->data_len  = payload_length - 8 - split_payload;
-                tx_buf->nb_segs = 2;
-            } else {
-                tx_buf->pkt_len = rx_buf->pkt_len;
-                tx_buf->data_len = rx_buf->data_len;
-                tx_buf->next = NULL;
-                tx_buf->nb_segs = 1;
-            }
-
-            rte_pktmbuf_free(rx_bufs[n_to_tx]);
-        }
-        if (num_valid > 0) {
-            uint16_t nb_recv = 0;
-            while ((size_t)nb_recv < num_valid) {
-                nb_recv = rte_eth_tx_burst(port, 0, tx_bufs, num_valid);
-            }
-        }
-    }
-    return 0;
 }
 
 void copy_payload_(struct rte_mbuf *src_mbuf,

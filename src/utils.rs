@@ -3,41 +3,7 @@ use color_eyre::eyre::{bail, Result};
 use eui48::MacAddress;
 use std::convert::{TryFrom, TryInto};
 use std::net::Ipv4Addr;
-use std::{fs::read_to_string, path::Path};
 use tracing::debug;
-use yaml_rust::{Yaml, YamlLoader};
-
-pub(crate) fn parse_eal_init(config_path: &str) -> Result<Vec<String>> {
-    let file_str = read_to_string(Path::new(&config_path))?;
-    let yamls = match YamlLoader::load_from_str(&file_str) {
-        Ok(docs) => docs,
-        Err(e) => {
-            bail!("Could not parse config yaml: {:?}", e);
-        }
-    };
-
-    let mut args = vec![];
-    let yaml = &yamls[0];
-    match yaml["dpdk"].as_hash() {
-        Some(map) => {
-            let eal_init = match map.get(&Yaml::from_str("eal_init")) {
-                Some(list) => list,
-                None => {
-                    bail!("Yaml config dpdk has no eal_init entry");
-                }
-            };
-            for entry in eal_init.as_vec().unwrap() {
-                //let entry_str = std::str::from_utf8(entry).unwrap();
-                args.push(entry.as_str().unwrap().to_string());
-            }
-        }
-
-        None => {
-            bail!("Yaml config file has no entry dpdk");
-        }
-    }
-    Ok(args)
-}
 
 // Header setting taken from Demikernel's catnip OS:
 // https://github.com/demikernel/demikernel/blob/master/src/rust/catnip/src/protocols/
@@ -51,7 +17,7 @@ pub const IPDEFTTL: u8 = 64;
 pub const IPPROTO_UDP: u8 = 17;
 pub const HEADER_PADDING_SIZE: usize = 0;
 pub const TOTAL_HEADER_SIZE: usize =
-    ETHERNET2_HEADER2_SIZE + IPV4_HEADER2_SIZE + UDP_HEADER2_SIZE + 4 + HEADER_PADDING_SIZE;
+    ETHERNET2_HEADER2_SIZE + IPV4_HEADER2_SIZE + UDP_HEADER2_SIZE + HEADER_PADDING_SIZE;
 
 #[repr(u16)]
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]

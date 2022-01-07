@@ -15,8 +15,6 @@ extern "C" {
     ) -> ::std::os::raw::c_int;
 
     pub fn munmap_huge_(addr: *mut ::std::os::raw::c_void, pgsize: usize, num_pages: usize);
-    pub fn register_custom_extbuf_ops_() -> ::std::os::raw::c_int;
-    pub fn set_custom_extbuf_ops_(mempool: *mut rte_mempool) -> ::std::os::raw::c_int;
     pub fn rte_mempool_count_(mempool: *mut rte_mempool) -> ::std::os::raw::c_int;
     pub fn rte_pktmbuf_refcnt_update_or_free_(packet: *mut rte_mbuf, val: i16);
     pub fn rte_pktmbuf_refcnt_set_(packet: *mut rte_mbuf, val: u16);
@@ -38,13 +36,6 @@ extern "C" {
     pub fn rte_errno_() -> ::std::os::raw::c_int;
     pub fn rte_get_timer_cycles_() -> u64;
     pub fn rte_get_timer_hz_() -> u64;
-    pub fn rte_pktmbuf_attach_extbuf_(
-        m: *mut rte_mbuf,
-        buf_addr: *mut ::std::os::raw::c_void,
-        buf_iova: rte_iova_t,
-        buf_len: u16,
-        shinfo: *mut rte_mbuf_ext_shared_info,
-    );
     pub fn general_free_cb_(addr: *mut ::std::os::raw::c_void, opaque: *mut ::std::os::raw::c_void);
     pub fn rte_memcpy_(
         dst: *mut ::std::os::raw::c_void,
@@ -88,8 +79,8 @@ extern "C" {
 
     pub fn fill_in_packet_header_(
         mbuf: *mut rte_mbuf,
-        my_eth: *mut rte_ether_addr,
-        dst_eth: *mut rte_ether_addr,
+        my_eth: *const rte_ether_addr,
+        dst_eth: *const rte_ether_addr,
         my_ip: u32,
         dst_ip: u32,
         client_port: u16,
@@ -99,9 +90,12 @@ extern "C" {
 
     pub fn parse_packet_(
         mbuf: *mut rte_mbuf,
-        payload_len: *mut usize,
-        our_eth: *mut rte_ether_addr,
+        our_eth: *const rte_ether_addr,
         our_ip: u32,
+        ip_src_addr: *mut u32,
+        udp_src_port: *mut u16,
+        udp_dst_port: *mut u16,
+        payload_len: *mut usize,
     ) -> bool;
 
     pub fn flip_headers_(mbuf: *mut rte_mbuf, id: u32);
@@ -135,24 +129,6 @@ extern "C" {
 
     pub fn set_checksums_(pkt: *mut rte_mbuf);
 
-    pub fn loop_in_c_(
-        port_id: u16,
-        my_eth: *mut rte_ether_addr,
-        my_ip: u32,
-        rx_bufs: *mut *mut rte_mbuf,
-        tx_bufs: *mut *mut rte_mbuf,
-        secondary_bufs: *mut *mut rte_mbuf,
-        mbuf_pool: *mut rte_mempool,
-        header_mbuf_pool: *mut rte_mempool,
-        extbuf_mempool: *mut rte_mempool,
-        num_mbufs: usize,
-        split_payload: usize,
-        zero_copy: bool,
-        use_external: bool,
-        shinfo: *mut rte_mbuf_ext_shared_info,
-        ext_mem_addr: *mut ::std::os::raw::c_void,
-    ) -> ::std::os::raw::c_int;
-
     pub fn copy_payload_(
         src_mbuf: *mut rte_mbuf,
         src_offset: usize,
@@ -169,31 +145,6 @@ extern "C" {
     ) -> ::std::os::raw::c_int;
 }
 
-#[cfg(feature = "mlx5")]
-#[link(name = "rte_net_mlx5")]
-extern "C" {
-    fn rte_pmd_mlx5_get_dyn_flag_names();
-
-    fn rte_pmd_mlx5_manual_reg_mr(
-        port_id: u8,
-        addr: *mut ::std::os::raw::c_void,
-        length: usize,
-        lkey_out: *mut u32,
-    ) -> *mut ::std::os::raw::c_void;
-
-    fn rte_pmd_mlx5_manual_dereg_mr(ibv_mr: *mut ::std::os::raw::c_void);
-}
-
-#[cfg(feature = "mlx5")]
-#[inline(never)]
-pub fn load_mlx5_driver() {
-    if std::env::var("DONT_SET_THIS").is_ok() {
-        unsafe {
-            rte_pmd_mlx5_get_dyn_flag_names();
-        }
-    }
-}
-
 #[inline]
 pub unsafe fn munmap_huge(addr: *mut ::std::os::raw::c_void, pgsize: usize, num_pages: usize) {
     munmap_huge_(addr, pgsize, num_pages);
@@ -206,16 +157,6 @@ pub unsafe fn mmap_huge(
     paddrs: *mut usize,
 ) -> ::std::os::raw::c_int {
     mmap_huge_(num_pages, addr, paddrs)
-}
-
-#[inline]
-pub unsafe fn register_custom_extbuf_ops() -> ::std::os::raw::c_int {
-    register_custom_extbuf_ops_()
-}
-
-#[inline]
-pub unsafe fn set_custom_extbuf_ops(mempool: *mut rte_mempool) -> ::std::os::raw::c_int {
-    set_custom_extbuf_ops_(mempool)
 }
 
 #[inline]
@@ -281,17 +222,6 @@ pub unsafe fn rte_get_timer_cycles() -> u64 {
 #[inline]
 pub unsafe fn rte_get_timer_hz() -> u64 {
     rte_get_timer_hz_()
-}
-
-#[inline]
-pub unsafe fn rte_pktmbuf_attach_extbuf(
-    m: *mut rte_mbuf,
-    buf_addr: *mut ::std::os::raw::c_void,
-    buf_iova: rte_iova_t,
-    buf_len: u16,
-    shinfo: *mut rte_mbuf_ext_shared_info,
-) {
-    rte_pktmbuf_attach_extbuf_(m, buf_addr, buf_iova, buf_len, shinfo);
 }
 
 #[inline]
@@ -371,8 +301,8 @@ pub unsafe fn make_ip(a: u8, b: u8, c: u8, d: u8) -> u32 {
 #[inline]
 pub unsafe fn fill_in_packet_header(
     mbuf: *mut rte_mbuf,
-    my_eth: *mut rte_ether_addr,
-    dst_eth: *mut rte_ether_addr,
+    my_eth: *const rte_ether_addr,
+    dst_eth: *const rte_ether_addr,
     my_ip: u32,
     dst_ip: u32,
     client_port: u16,
@@ -394,12 +324,23 @@ pub unsafe fn fill_in_packet_header(
 #[inline]
 pub unsafe fn parse_packet(
     mbuf: *mut rte_mbuf,
-    our_eth: *mut rte_ether_addr,
+    our_eth: *const rte_ether_addr,
     our_ip: u32,
-) -> (bool, usize) {
-    let mut payload_len: usize = 0;
-    let valid = parse_packet_(mbuf, &mut payload_len as _, our_eth, our_ip);
-    (valid, payload_len)
+) -> (bool, u32, u16, u16, usize) {
+    let mut src_ip = 0u32;
+    let mut src_port = 0u16;
+    let mut dst_port = 0u16;
+    let mut payload_len = 0usize;
+    let valid = parse_packet_(
+        mbuf,
+        our_eth,
+        our_ip,
+        &mut src_ip as _,
+        &mut src_port as _,
+        &mut dst_port as _,
+        &mut payload_len as _,
+    );
+    (valid, src_ip, src_port, dst_port, payload_len)
 }
 
 #[inline]
@@ -427,43 +368,6 @@ pub unsafe fn shinfo_init(
 #[inline]
 pub unsafe fn eth_dev_configure(port_id: u16, rx_rings: u16, tx_rings: u16) {
     eth_dev_configure_(port_id, rx_rings, tx_rings);
-}
-
-#[inline]
-pub unsafe fn loop_in_c(
-    port_id: u16,
-    my_eth: *mut rte_ether_addr,
-    my_ip: u32,
-    rx_bufs: *mut *mut rte_mbuf,
-    tx_bufs: *mut *mut rte_mbuf,
-    secondary_bufs: *mut *mut rte_mbuf,
-    mbuf_pool: *mut rte_mempool,
-    header_mbuf_pool: *mut rte_mempool,
-    extbuf_mempool: *mut rte_mempool,
-    num_mbufs: usize,
-    split_payload: usize,
-    zero_copy: bool,
-    use_external: bool,
-    shinfo: *mut rte_mbuf_ext_shared_info,
-    ext_mem_addr: *mut ::std::os::raw::c_void,
-) -> u32 {
-    return loop_in_c_(
-        port_id,
-        my_eth,
-        my_ip,
-        rx_bufs,
-        tx_bufs,
-        secondary_bufs,
-        mbuf_pool,
-        header_mbuf_pool,
-        extbuf_mempool,
-        num_mbufs,
-        split_payload,
-        zero_copy,
-        use_external,
-        shinfo,
-        ext_mem_addr,
-    ) as u32;
 }
 
 #[inline]

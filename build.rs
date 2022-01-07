@@ -84,6 +84,8 @@ fn main() {
         .header(header_path.to_str().unwrap())
         .blocklist_type("rte_arp_ipv4")
         .blocklist_type("rte_arp_hdr")
+        .layout_tests(false)
+        .generate_comments(false)
         .parse_callbacks(Box::new(bindgen::CargoCallbacks))
         .generate()
         .unwrap_or_else(|e| panic!("Failed to generate bindings: {:?}", e));

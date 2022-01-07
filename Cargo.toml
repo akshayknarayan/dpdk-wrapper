@@ -8,12 +8,10 @@ color-eyre = "0.5"
 tracing = "0.1"
 byteorder = "1"
 eui48 = "1"
-yaml-rust = "0.4"
+flume = "0.10"
+toml = "0.5"
 ahash = "0.7"
 
 [build-dependencies]
 bindgen = "0.59"
 cc = "1"
-
-[dev-dependencies]
-tracing-subscriber = "0.3"

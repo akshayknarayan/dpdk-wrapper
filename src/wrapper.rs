@@ -1,24 +1,13 @@
 use crate::bindings::*;
-use crate::{mem, utils};
+use crate::utils;
 use color_eyre::eyre::{bail, ensure, Result, WrapErr};
 use std::{
     ffi::{CStr, CString},
-    mem::{size_of, MaybeUninit},
-    ptr, slice,
+    mem::MaybeUninit,
+    ptr,
     time::Duration,
 };
 use tracing::{debug, info, trace, warn};
-
-#[macro_export]
-macro_rules! mbuf_slice(
-    ($mbuf: expr, $offset: expr, $len: expr) => {
-        slice::from_raw_parts_mut(
-            ((*$mbuf).buf_addr as *mut u8)
-            .offset((*$mbuf).data_off as isize + $offset as isize),
-            $len,
-        )
-    }
-);
 
 #[inline]
 unsafe fn dpdk_error(func_name: &str, retval: Option<std::os::raw::c_int>) -> Result<()> {
@@ -84,10 +73,6 @@ macro_rules! dpdk_ok (
     };
 );
 
-#[derive(Debug, PartialEq, Eq, Clone, Copy)]
-pub struct MempoolPtr(pub *mut rte_mempool);
-unsafe impl Send for MempoolPtr {}
-
 unsafe fn print_error() -> String {
     let errno = rte_errno();
     let c_buf = rte_strerror(errno);
@@ -102,7 +87,7 @@ pub const MBUF_CACHE_SIZE: u16 = 250;
 const RX_RING_SIZE: u16 = 2048;
 const TX_RING_SIZE: u16 = 2048;
 pub const MAX_SCATTERS: usize = 33;
-pub const RECEIVE_BURST_SIZE: u16 = 32;
+pub const RECEIVE_BURST_SIZE: u16 = 16;
 pub const MEMPOOL_MAX_SIZE: usize = 65536;
 
 pub const RX_PACKET_LEN: u32 = 9216;
@@ -122,6 +107,10 @@ const RX_WTHRESH: u8 = 0;
 const TX_PTHRESH: u8 = 0;
 const TX_HTHRESH: u8 = 0;
 const TX_WTHRESH: u8 = 0;
+
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub struct MempoolPtr(pub *mut rte_mempool);
+unsafe impl Send for MempoolPtr {}
 
 /// Constructs and sends a packet with an mbuf from the given mempool, copying the payload.
 pub unsafe fn get_mbuf_with_memcpy(
@@ -270,74 +259,6 @@ unsafe fn initialize_dpdk_port(
     Ok(())
 }
 
-/// Returns a mempool meant for attaching external databuffers: no buffers are allocated for packet
-/// data except the rte_mbuf data structures themselves.
-///
-/// Arguments
-/// * name - A string slice with the intended name of the mempool.
-/// * nb_ports - A u16 with the number of valid DPDK ports.
-pub fn init_extbuf_mempool(name: &str, nb_ports: u16) -> Result<*mut rte_mempool> {
-    let name = CString::new(name)?;
-
-    let mut mbp_priv_uninit: MaybeUninit<rte_pktmbuf_pool_private> = MaybeUninit::zeroed();
-    unsafe {
-        (*mbp_priv_uninit.as_mut_ptr()).mbuf_data_room_size = 0;
-        (*mbp_priv_uninit.as_mut_ptr()).mbuf_priv_size = MBUF_PRIV_SIZE as _;
-    }
-
-    // actual data size is empty (just mbuf and priv data)
-    let elt_size: u32 = size_of::<rte_mbuf>() as u32 + MBUF_PRIV_SIZE as u32;
-
-    debug!(elt_size, "Trying to init extbuf mempool with elt_size");
-    let mbuf_pool = unsafe {
-        rte_mempool_create_empty(
-            name.as_ptr(),
-            (NUM_MBUFS * nb_ports) as u32,
-            elt_size,
-            MBUF_CACHE_SIZE.into(),
-            MBUF_PRIV_SIZE as u32,
-            rte_socket_id() as i32,
-            0,
-        )
-    };
-    if mbuf_pool.is_null() {
-        bail!("Mempool created with rte_mempool_create_empty is null.");
-    }
-
-    // register new ops table
-    // TODO: pass in a string to represent the name of the ops being registered
-    unsafe {
-        dpdk_ok!(register_custom_extbuf_ops());
-        dpdk_ok!(set_custom_extbuf_ops(mbuf_pool));
-
-        // initialize any private data (right now there is none)
-        rte_pktmbuf_pool_init(mbuf_pool, mbp_priv_uninit.as_mut_ptr() as _);
-
-        // allocate the mempool
-        // on error free the mempool
-        if rte_mempool_populate_default(mbuf_pool) != (NUM_MBUFS * nb_ports) as i32 {
-            rte_mempool_free(mbuf_pool);
-            bail!("Not able to initialize extbuf mempool: Failed on rte_mempool_populate_default.");
-        }
-
-        // initialize each mbuf
-        let num = rte_mempool_obj_iter(mbuf_pool, Some(rte_pktmbuf_init), ptr::null_mut());
-        assert!(num == (NUM_MBUFS * nb_ports) as u32);
-
-        // initialize private data
-        if rte_mempool_obj_iter(mbuf_pool, Some(custom_init_priv()), ptr::null_mut())
-            != (NUM_MBUFS * nb_ports) as u32
-        {
-            rte_mempool_free(mbuf_pool);
-            bail!(
-                "Not able to initialize private data in extbuf pool: failed on custom_init_priv."
-            );
-        }
-    }
-
-    Ok(mbuf_pool)
-}
-
 /// Creates a mempool with the given value size, and number of values.
 pub fn create_mempool(
     name: &str,
@@ -369,9 +290,7 @@ pub fn create_mempool(
             != (num_values as u16 * nb_ports) as u32
         {
             rte_mempool_free(mbuf_pool);
-            bail!(
-                "Not able to initialize private data in extbuf pool: failed on custom_init_priv."
-            );
+            bail!("Not able to initialize private data in pool: failed on custom_init_priv.");
         }
 
         Ok(mbuf_pool)
@@ -379,33 +298,7 @@ pub fn create_mempool(
 }
 
 fn create_native_mempool(name: &str, nb_ports: u16) -> Result<*mut rte_mempool> {
-    let name_str = CString::new(name)?;
-
-    // SAFETY: only initializes.
-    unsafe {
-        let mbuf_pool = rte_pktmbuf_pool_create(
-            name_str.as_ptr(),
-            (NUM_MBUFS * nb_ports) as u32,
-            MBUF_CACHE_SIZE as u32,
-            MBUF_PRIV_SIZE as u16,
-            MBUF_BUF_SIZE as u16,
-            rte_socket_id() as i32,
-        );
-        if mbuf_pool.is_null() {
-            warn!("mbuf pool is null.");
-        }
-        assert!(!mbuf_pool.is_null());
-
-        // initialize private data of mempool: set all lkeys to -1
-        if rte_mempool_obj_iter(mbuf_pool, Some(custom_init_priv()), ptr::null_mut())
-            != (NUM_MBUFS * nb_ports) as u32
-        {
-            rte_mempool_free(mbuf_pool);
-            bail!("Not able to initialize private data in extbuf pool.");
-        }
-
-        Ok(mbuf_pool)
-    }
+    create_mempool(name, nb_ports, MBUF_BUF_SIZE as _, NUM_MBUFS.into())
 }
 
 /// Initializes DPDK ports, and memory pools.
@@ -445,18 +338,14 @@ fn dpdk_init_helper(num_cores: usize) -> Result<(Vec<*mut rte_mempool>, u16)> {
     }
 }
 
-/// Initializes DPDK EAL and ports, and memory pools given a yaml-config file.
-/// Returns two mempools:
-/// (1) One that allocates mbufs with `MBUF_BUF_SIZE` of buffer space.
-/// (2) One that allocates empty mbuf structs, meant for attaching external data buffers.
+/// Initializes DPDK EAL and ports.
+///
+/// Returns mempool that allocates mbufs with `MBUF_BUF_SIZE` of buffer space.
 ///
 /// Arguments:
-/// * config_path: - A string slice that holds the path to a config file with DPDK initialization.
-/// information.
-pub fn dpdk_init(config_path: &str, num_cores: usize) -> Result<(Vec<*mut rte_mempool>, u16)> {
-    // EAL initialization
-    let eal_init = utils::parse_eal_init(config_path)?;
-    dpdk_eal_init(eal_init).wrap_err("EAL initialization failed.")?;
+/// * eal_args: - DPDK eal initialization args.
+pub fn dpdk_init(eal_args: Vec<String>, num_cores: usize) -> Result<(Vec<*mut rte_mempool>, u16)> {
+    dpdk_eal_init(eal_args).wrap_err("EAL initialization failed.")?;
 
     // init ports, mempools on the rx side
     dpdk_init_helper(num_cores)
@@ -681,278 +570,4 @@ pub unsafe fn refcnt(pkt: *mut rte_mbuf) -> u16 {
 pub unsafe fn free_mbuf(pkt: *mut rte_mbuf) {
     debug!(packet=?pkt, cur_refcnt=rte_pktmbuf_refcnt_read(pkt), "Called free_mbuf on packet");
     rte_pktmbuf_refcnt_update_or_free(pkt, -1);
-}
-
-#[inline]
-pub fn dpdk_register_extmem(
-    metadata: &mem::MmapMetadata,
-    lkey: *mut u32,
-) -> Result<*mut std::os::raw::c_void> {
-    debug!(
-        "Trying to register: {:?} with lkey: {:?}",
-        metadata.ptr, lkey
-    );
-
-    // use optimization of manually registering external memory (to avoid the btree lookup on send)
-    // need to map physical addresses for each virtual region
-    // if using mellanox, need to retrieve the lkey for this pinned memory
-    let mut ibv_mr: *mut ::std::os::raw::c_void = ptr::null_mut();
-    #[cfg(feature = "mlx5")]
-    {
-        // TODO: currently, only calling for port 0
-        ibv_mr = mlx5_manual_reg_mr_callback(0, metadata.ptr as _, metadata.length, lkey);
-        if ibv_mr.is_null() {
-            bail!("Manual memory registration failed.");
-        }
-    }
-
-    Ok(ibv_mr)
-}
-
-#[inline]
-pub fn dpdk_unregister_extmem(metadata: &mem::MmapMetadata) -> Result<()> {
-    #[cfg(feature = "mlx5")]
-    {
-        mlx5_manual_dereg_mr_callback(metadata.get_ibv_mr());
-    }
-    Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::mem::MmapMetadata;
-    use color_eyre;
-    use eui48::MacAddress;
-    use std::{convert::TryInto, mem::MaybeUninit, net::Ipv4Addr, ptr};
-    use tracing::info;
-    use tracing_error::ErrorLayer;
-    use tracing_subscriber::layer::SubscriberExt;
-
-    macro_rules! test_init(
-        () => {
-            let subscriber = tracing_subscriber::registry()
-                .with(tracing_subscriber::fmt::layer())
-                .with(tracing_subscriber::EnvFilter::from_default_env())
-                .with(ErrorLayer::default());
-            let _guard = subscriber.set_default();
-            color_eyre::install().unwrap_or_else(|_| ());
-        }
-    );
-
-    /// TestMbuf has to have data layout as if private data were right after mbuf data structure.
-    /// TODO: how do we ensure it's tightly packet?
-    pub struct TestMbuf {
-        mbuf: rte_mbuf,
-        pub lkey: u32,
-        pub lkey_present: u16,
-        pub refers_to_another: u16,
-        pub has_external: bool,
-    }
-
-    fn random_mac() -> MacAddress {
-        MacAddress::parse_str("b8:83:03:79:af:40").unwrap()
-    }
-
-    fn random_ip() -> Ipv4Addr {
-        Ipv4Addr::new(123, 0, 0, 1)
-    }
-
-    impl TestMbuf {
-        pub fn new() -> TestMbuf {
-            let mut mbuf: MaybeUninit<rte_mbuf> = MaybeUninit::zeroed();
-            unsafe {
-                let ptr = libc::malloc(MBUF_BUF_SIZE as usize);
-                (*mbuf.as_mut_ptr()).buf_len = MBUF_BUF_SIZE as u16;
-                (*mbuf.as_mut_ptr()).buf_addr = ptr;
-                (*mbuf.as_mut_ptr()).next = ptr::null_mut();
-                (*mbuf.as_mut_ptr()).data_off = 0;
-                (*mbuf.as_mut_ptr()).nb_segs = 1;
-                (*mbuf.as_mut_ptr()).priv_size = 8;
-                let mbuf = mbuf.assume_init();
-                TestMbuf {
-                    mbuf: mbuf,
-                    lkey: 0,
-                    lkey_present: 0,
-                    refers_to_another: 0,
-                    has_external: false,
-                }
-            }
-        }
-
-        pub fn new_external() -> TestMbuf {
-            let mut mbuf: MaybeUninit<rte_mbuf> = MaybeUninit::zeroed();
-            unsafe {
-                let ptr = ptr::null_mut();
-                (*mbuf.as_mut_ptr()).buf_len = MBUF_BUF_SIZE as u16;
-                (*mbuf.as_mut_ptr()).buf_addr = ptr;
-                (*mbuf.as_mut_ptr()).next = ptr::null_mut();
-                (*mbuf.as_mut_ptr()).data_off = 0;
-                (*mbuf.as_mut_ptr()).nb_segs = 1;
-                (*mbuf.as_mut_ptr()).priv_size = 8;
-                let mbuf = mbuf.assume_init();
-                TestMbuf {
-                    mbuf: mbuf,
-                    lkey: 0,
-                    lkey_present: 0,
-                    refers_to_another: 0,
-                    has_external: true,
-                }
-            }
-        }
-
-        pub fn get_pointer(&mut self) -> *mut rte_mbuf {
-            &mut self.mbuf as _
-        }
-    }
-
-    impl Drop for TestMbuf {
-        fn drop(&mut self) {
-            unsafe {
-                if !(self.mbuf.buf_addr.is_null()) {
-                    if !(self.has_external) {
-                        debug!(
-                            external = self.has_external,
-                            "Trying to drop mbuf addr: {:?}", self.mbuf.buf_addr
-                        );
-                        libc::free(self.mbuf.buf_addr);
-                    }
-                }
-            };
-        }
-    }
-
-    fn get_random_bytes(size: usize) -> Vec<u8> {
-        let random_bytes: Vec<u8> = (0..size).map(|_| rand::random::<u8>()).collect();
-        println!("{:?}", random_bytes);
-        random_bytes
-    }
-
-    #[test]
-    fn valid_headers() {
-        test_init!();
-        let mut test_mbuf = TestMbuf::new();
-        let mut mbufs: [[*mut rte_mbuf; 32]; 33] = [[ptr::null_mut(); 32]; 33];
-        mbufs[0][0] = test_mbuf.get_pointer();
-        let mut pkt = Pkt::init(1);
-        let mut cornflake = Cornflake::default();
-        cornflake.set_id(1);
-
-        let src_info = utils::AddressInfo::new(12345, Ipv4Addr::LOCALHOST, MacAddress::broadcast());
-        let dst_info = utils::AddressInfo::new(12345, Ipv4Addr::BROADCAST, MacAddress::default());
-        let hdr_info = utils::HeaderInfo::new(src_info, dst_info);
-
-        pkt.construct_from_test_sga(&cornflake, &mut mbufs, &hdr_info, (0, 0), &Vec::default())
-            .unwrap();
-
-        let mbuf = mbufs[0][0];
-        unsafe {
-            if ((*mbuf).data_len != utils::TOTAL_HEADER_SIZE as u16)
-                || ((*mbuf).pkt_len != utils::TOTAL_HEADER_SIZE as u32)
-            {
-                info!("Header len is supposed to be: {}", utils::TOTAL_HEADER_SIZE);
-                info!("Reported data len: {}", (*mbuf).data_len);
-                info!("Reported pkt len: {}", (*mbuf).pkt_len);
-                panic!("Incorrect header size in packet data structure.");
-            }
-        }
-
-        // now test that the packet we set is valid
-        let eth_hdr_slice = mbuf_slice!(mbuf, 0, utils::ETHERNET2_HEADER2_SIZE);
-        let (src_eth, _) = utils::check_eth_hdr(eth_hdr_slice, &dst_info.ether_addr).unwrap();
-        assert!(src_eth == src_info.ether_addr);
-
-        let ipv4_hdr_slice = mbuf_slice!(
-            mbuf,
-            utils::ETHERNET2_HEADER2_SIZE,
-            utils::IPV4_HEADER2_SIZE
-        );
-
-        let (src_ip, _) = utils::check_ipv4_hdr(ipv4_hdr_slice, &dst_info.ipv4_addr).unwrap();
-        assert!(src_ip == src_info.ipv4_addr);
-
-        let udp_hdr_slice = mbuf_slice!(
-            mbuf,
-            utils::ETHERNET2_HEADER2_SIZE + utils::IPV4_HEADER2_SIZE,
-            utils::UDP_HEADER2_SIZE
-        );
-
-        let (src_port, _) = utils::check_udp_hdr(udp_hdr_slice, dst_info.udp_port).unwrap();
-        assert!(src_port == src_info.udp_port);
-
-        let id_hdr_slice = mbuf_slice!(
-            mbuf,
-            utils::ETHERNET2_HEADER2_SIZE + utils::IPV4_HEADER2_SIZE + utils::UDP_HEADER2_SIZE,
-            4
-        );
-
-        let msg_id = utils::parse_msg_id(id_hdr_slice);
-        assert!(msg_id == 1);
-
-        let (msg_id, addr_info, _size) = check_valid_packet(mbuf, &dst_info).unwrap();
-        assert!(msg_id == 1);
-        assert!(addr_info == src_info);
-    }
-
-    #[test]
-    fn invalid_headers() {
-        test_init!();
-        let mut test_mbuf = TestMbuf::new();
-        let mut mbufs: [[*mut rte_mbuf; 32]; 33] = [[ptr::null_mut(); 32]; 33];
-        mbufs[0][0] = test_mbuf.get_pointer();
-        let mut pkt = Pkt::init(1);
-        let mut cornflake = Cornflake::default();
-        cornflake.set_id(1);
-
-        let src_info = utils::AddressInfo::new(12345, Ipv4Addr::LOCALHOST, MacAddress::broadcast());
-        let dst_info = utils::AddressInfo::new(12345, Ipv4Addr::BROADCAST, MacAddress::default());
-        let hdr_info = utils::HeaderInfo::new(src_info, dst_info);
-
-        pkt.construct_from_test_sga(&cornflake, &mut mbufs, &hdr_info, (0, 0), &Vec::default())
-            .unwrap();
-
-        // now test that the packet does NOT have a valid destination ether addr
-        let eth_hdr_slice = mbuf_slice!(mbufs[0][0], 0, utils::ETHERNET2_HEADER2_SIZE);
-        match utils::check_eth_hdr(eth_hdr_slice, &random_mac()) {
-            Ok(_) => {
-                panic!("Dst mac address should have been invalid.");
-            }
-            Err(_) => {}
-        }
-
-        let ipv4_hdr_slice = mbuf_slice!(
-            mbufs[0][0],
-            utils::ETHERNET2_HEADER2_SIZE,
-            utils::IPV4_HEADER2_SIZE
-        );
-
-        match utils::check_ipv4_hdr(ipv4_hdr_slice, &random_ip()) {
-            Ok(_) => {
-                panic!("Destination ipv4 address should have been invalid.");
-            }
-            Err(_) => {}
-        }
-
-        let udp_hdr_slice = mbuf_slice!(
-            mbufs[0][0],
-            utils::ETHERNET2_HEADER2_SIZE + utils::IPV4_HEADER2_SIZE,
-            utils::UDP_HEADER2_SIZE
-        );
-
-        match utils::check_udp_hdr(udp_hdr_slice, dst_info.udp_port + 1) {
-            Ok(_) => {
-                panic!("Destination udp port should have been wrong.");
-            }
-            Err(_) => {}
-        }
-
-        let fake_addr_info =
-            utils::AddressInfo::new(dst_info.udp_port + 1, random_ip(), random_mac());
-        match check_valid_packet(mbufs[0][0], &fake_addr_info) {
-            Some(_) => {
-                panic!("Packet isn't valid, check_valid_packet should fail.");
-            }
-            None => {}
-        }
-    }
 }
