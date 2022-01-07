@@ -109,8 +109,6 @@ extern "C" {
 
     pub fn eth_dev_configure_(port_id: u16, rx_rings: u16, tx_rings: u16);
 
-    pub fn destroy_flow_rules_(dpdk_port: u16);
-
     pub fn compute_flow_affinity_(
         local_ip: u32,
         remote_ip: u32,
@@ -118,14 +116,6 @@ extern "C" {
         remote_port: u16,
         num_queues: usize,
     ) -> u32;
-
-    pub fn add_flow_rule_(
-        dpdk_port: u16,
-        dst_eth: *mut rte_ether_addr,
-        dst_ip: u32,
-        dst_udp_port: u16,
-        queue_id: u16,
-    );
 
     pub fn set_checksums_(pkt: *mut rte_mbuf);
 
@@ -384,33 +374,6 @@ pub unsafe fn copy_payload(
 #[inline]
 pub unsafe fn set_checksums(mbuf: *mut rte_mbuf) {
     set_checksums_(mbuf);
-}
-
-#[inline]
-pub unsafe fn destroy_flow_rules(dpdk_port: u16) {
-    destroy_flow_rules_(dpdk_port);
-}
-
-#[inline]
-pub unsafe fn compute_flow_affinity(
-    local_ip: u32,
-    remote_ip: u32,
-    local_port: u16,
-    remote_port: u16,
-    num_queues: usize,
-) -> u32 {
-    compute_flow_affinity_(local_ip, remote_ip, local_port, remote_port, num_queues)
-}
-
-#[inline]
-pub unsafe fn add_flow_rule(
-    dpdk_port: u16,
-    dst_eth: *mut rte_ether_addr,
-    dst_ip: u32,
-    dst_udp_port: u16,
-    queue_id: u16,
-) {
-    add_flow_rule_(dpdk_port, dst_eth, dst_ip, dst_udp_port, queue_id);
 }
 
 #[cfg(feature = "mlx5")]

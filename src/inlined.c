@@ -45,16 +45,6 @@ static uint8_t sym_rss_key[] = {
     0x6D, 0x5A, 0x6D, 0x5A, 0x6D, 0x5A, 0x6D, 0x5A,
 };
 
-static struct rte_flow_attr attr = { .ingress = 1 };
-static struct rte_flow_item patterns[MAX_CORES][4];
-static struct rte_flow_action actions[MAX_CORES][2];
-static struct rte_flow_item_eth eths[MAX_CORES];
-static struct rte_flow_item_ipv4 ipv4s[MAX_CORES];
-static struct rte_flow_item_udp udps[MAX_CORES];
-static struct rte_flow_action_queue queues[MAX_CORES];
-static struct rte_flow *flows[MAX_CORES];
-static struct rte_flow_error errors[MAX_CORES];
-
 inline void free_referred_mbuf(void *buf) {
     struct rte_mbuf *mbuf = (struct rte_mbuf *)(buf);
     struct tx_pktmbuf_priv *priv_data = (struct tx_pktmbuf_priv *)(((char *)buf) + sizeof(struct rte_mbuf));
@@ -574,77 +564,6 @@ void switch_headers_(struct rte_mbuf *rx_buf, struct rte_mbuf *tx_buf, size_t pa
 
 struct rte_mbuf_ext_shared_info *shinfo_init_(void *addr, uint16_t *buf_len) {
     return rte_pktmbuf_ext_shinfo_init_helper(addr, buf_len, general_free_cb_, NULL);
-}
-
-void destroy_flow_rules_(uint16_t dpdk_port) {
-    rte_flow_flush(dpdk_port, &errors[0]);
-}
-
-void add_flow_rule_(uint16_t dpdk_port,
-                        struct rte_ether_addr *dest_eth,
-                        uint32_t dst_ip, 
-                        uint16_t dst_udp_port, 
-                        uint16_t queue_id) {
-    printf("Adding flow rule for queue %u udp port %u\n", queue_id, dst_udp_port);
-    // set the queue
-    queues[queue_id].index = queue_id;
-    /* setting the eth to pass only packets to this eth addr */
-    //rte_memcpy(&eths[queue_id].dst, dest_eth, RTE_ETHER_HDR_LEN);
-    patterns[queue_id][0].type = RTE_FLOW_ITEM_TYPE_ETH;
-    patterns[queue_id][0].spec = &eths[queue_id];
-
-    /* set the dst ipv4 packet to the required value */
-    ipv4s[queue_id].hdr.dst_addr = htonl(dst_ip);
-    patterns[queue_id][1].type = RTE_FLOW_ITEM_TYPE_IPV4;
-    patterns[queue_id][1].spec = &ipv4s[queue_id];
-
-    udps[queue_id].hdr.dst_port = htonl(dst_udp_port);
-    patterns[queue_id][2].type = RTE_FLOW_ITEM_TYPE_UDP;
-    patterns[queue_id][2].spec = &udps[queue_id];
-
-    /* end the pattern array */
-    patterns[queue_id][3].type = RTE_FLOW_ITEM_TYPE_END;
-
-    /* create the queue action */
-    actions[queue_id][0].type = RTE_FLOW_ACTION_TYPE_QUEUE;
-    actions[queue_id][0].conf = &queues[queue_id];
-    actions[queue_id][1].type = RTE_FLOW_ACTION_TYPE_END;
-
-    /* validate and create the flow rule */
-    if (!rte_flow_validate(dpdk_port, &attr, patterns[queue_id], actions[queue_id], &errors[queue_id])) {
-        flows[queue_id] = rte_flow_create(dpdk_port, &attr, patterns[queue_id], actions[queue_id], &errors[queue_id]);
-    } else {
-        printf("Flow rule for queue %u not validated: %s\n", queue_id, strerror(rte_errno_()));
-    }
-}
-
-/**
- * compute_flow_affinity - compute rss hash for incoming packets
- * @local_port: the local port number
- * @remote_port: the remote port
- * @local_ip: local ip (in host-order)
- * @remote_ip: remote ip (in host-order)
- * @num_queues: total number of queues
- *
- * Returns the 32 bit hash mod maxks
- *
- * copied from dpdk/lib/librte_hash/rte_thash.h
- */
-uint32_t compute_flow_affinity_(uint32_t local_ip, 
-                                        uint32_t remote_ip, 
-                                        uint16_t local_port, 
-                                        uint16_t remote_port, 
-                                        size_t num_queues)
-{
-	const uint8_t *rss_key = (uint8_t *)sym_rss_key;
-
-	uint32_t input_tuple[] = {
-        remote_ip, local_ip, local_port | remote_port << 16
-	};
-    
-    uint32_t ret = rte_softrss((uint32_t *)&input_tuple, ARRAY_SIZE(input_tuple),
-         (const uint8_t *)rss_key);
-	return ret % (uint32_t)num_queues;
 }
 
 void eth_dev_configure_(uint16_t port_id, uint16_t rx_rings, uint16_t tx_rings) {
