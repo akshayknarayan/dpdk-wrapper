@@ -9,6 +9,7 @@ use color_eyre::{
     eyre::{bail, ensure, eyre, WrapErr},
     Result,
 };
+use eui48::MacAddress;
 use flume::{Receiver, Sender};
 use std::collections::BTreeSet;
 use std::fs::read_to_string;
@@ -73,7 +74,7 @@ pub struct DpdkIoKernelHandle {
 impl DpdkIoKernelHandle {
     fn new(new_conns: Sender<NewConn>, outgoing_pkts: Sender<Msg>) -> Self {
         Self {
-            free_ports: Arc::new(Mutex::new((1001..=65535).collect())), // all ports start free.
+            free_ports: Arc::new(Mutex::new((1024..=65535).collect())), // all ports start free.
             new_conns,
             outgoing_pkts,
         }
@@ -140,7 +141,7 @@ impl DpdkIoKernel {
     //   [net]
     //   ip = "10.1.1.2"
     pub fn new(config_path: std::path::PathBuf) -> Result<(Self, DpdkIoKernelHandle)> {
-        let (dpdk_config, ip_config) = parse_cfg(config_path.as_path())?;
+        let (dpdk_config, ip_config, arp_table) = parse_cfg(config_path.as_path())?;
         let (mbuf_pools, nb_ports) = dpdk_init(dpdk_config, 1)?;
 
         let mbuf_pool = mbuf_pools[0];
@@ -280,7 +281,9 @@ impl DpdkIoKernel {
     }
 }
 
-fn parse_cfg(config_path: &std::path::Path) -> Result<(Vec<String>, Ipv4Addr)> {
+fn parse_cfg(
+    config_path: &std::path::Path,
+) -> Result<(Vec<String>, Ipv4Addr, HashMap<Ipv4Addr, MacAddress>)> {
     let file_str = read_to_string(config_path)?;
     let mut cfg: toml::Value = file_str.parse().wrap_err("parse TOML config")?;
 
@@ -301,17 +304,46 @@ fn parse_cfg(config_path: &std::path::Path) -> Result<(Vec<String>, Ipv4Addr)> {
             })
     }
 
-    fn net_cfg(mut net_cfg: toml::Value) -> Result<Ipv4Addr> {
-        net_cfg
+    fn net_cfg(mut net_cfg: toml::Value) -> Result<(Ipv4Addr, HashMap<Ipv4Addr, MacAddress>)> {
+        let tab = net_cfg
             .as_table_mut()
-            .ok_or_else(|| eyre!("Net config not a table"))
-            .and_then(|tab| {
-                let s = tab.remove("ip").ok_or_else(|| eyre!("No ip in net"))?;
-                match s {
-                    toml::value::Value::String(s) => Ok(s.parse()?),
-                    _ => bail!("ip value should be a string"),
-                }
-            })
+            .ok_or_else(|| eyre!("Net config not a table"))?;
+        let my_ip = tab
+            .remove("ip")
+            .ok_or_else(|| eyre!("No ip in net"))?
+            .as_str()
+            .ok_or_else(|| eyre!("ip value should be a string"))?
+            .parse()?;
+
+        let arp = tab
+            .remove("arp")
+            .ok_or_else(|| eyre!("No arp table in net"))?;
+        let arp_table: Result<HashMap<_, _>, _> = match arp {
+            toml::value::Value::Array(arp_table) => arp_table
+                .into_iter()
+                .map(|v| match v {
+                    toml::value::Value::Table(arp_entry) => {
+                        let ip: Ipv4Addr = arp_entry
+                            .get("ip")
+                            .ok_or_else(|| eyre!("no ip in arp entry"))?
+                            .as_str()
+                            .ok_or_else(|| eyre!("value not a string"))?
+                            .parse()?;
+                        let mac: MacAddress = arp_entry
+                            .get("mac")
+                            .ok_or_else(|| eyre!("no mac in arp entry"))?
+                            .as_str()
+                            .ok_or_else(|| eyre!("value not a string"))?
+                            .parse()?;
+                        Ok((ip, mac))
+                    }
+                    _ => bail!("arp table values should be dicts"),
+                })
+                .collect(),
+            _ => bail!("arp table should be an array"),
+        };
+
+        Ok((my_ip, arp_table?))
     }
 
     cfg.as_table_mut()
@@ -321,12 +353,12 @@ fn parse_cfg(config_path: &std::path::Path) -> Result<(Vec<String>, Ipv4Addr)> {
                 tab.remove("dpdk")
                     .ok_or_else(|| eyre!("No entry dpdk in cfg"))?,
             )?;
-            let ip = net_cfg(
+            let (ip, arp) = net_cfg(
                 tab.remove("net")
                     .ok_or_else(|| eyre!("No entry net in cfg"))?,
             )?;
 
-            Ok((dpdk_cfg, ip))
+            Ok((dpdk_cfg, ip, arp))
         })
 }
 
