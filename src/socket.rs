@@ -284,14 +284,16 @@ impl DpdkIoKernel {
                 }
 
                 i += 1;
+                if i >= 16 {
+                    break;
+                }
             }
 
-            if i > 16 {
-                warn!(?i, "tx_burst size > 16");
-            }
-
-            if let Err(err) = unsafe { tx_burst(self.port, 0, tx_bufs.as_mut_ptr(), 16) } {
-                warn!(?err, "tx_burst error");
+            if i > 0 {
+                if let Err(err) = unsafe { tx_burst(self.port, 0, tx_bufs.as_mut_ptr(), i as u16) }
+                {
+                    warn!(?err, "tx_burst error");
+                }
             }
 
             // 3. third, check for new connections

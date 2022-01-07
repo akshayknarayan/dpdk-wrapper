@@ -173,10 +173,7 @@ fn wait_for_link_status_up(port_id: u16) -> Result<()> {
             } else {
                 "half"
             };
-            info!(
-                "Port {} Link Up - speed {} Mbps - {} duplex",
-                port_id, link.link_speed, duplex
-            );
+            info!(?port_id, speed_mbps = ?link.link_speed, ?duplex, "Link Up");
             return Ok(());
         }
         unsafe { rte_delay_us_block(sleep_duration_ms.as_micros() as u32) };
@@ -223,7 +220,7 @@ unsafe fn initialize_dpdk_port(
 
     // allocate and set up 1 RX queue per Ethernet port
     for i in 0..rx_rings {
-        debug!("Initializing rx ring {}", i);
+        trace!(?i, "Initializing rx ring");
         dpdk_ok!(rte_eth_rx_queue_setup(
             port_id,
             i,
@@ -235,7 +232,7 @@ unsafe fn initialize_dpdk_port(
     }
 
     for i in 0..tx_rings {
-        debug!("Initializing tx ring {}", i);
+        trace!(?i, "Initializing tx ring");
         dpdk_ok!(rte_eth_tx_queue_setup(
             port_id,
             i,
@@ -246,21 +243,20 @@ unsafe fn initialize_dpdk_port(
     }
 
     // start the ethernet port
-    debug!(?port_id, "starting port");
+    trace!(?port_id, "starting port");
     dpdk_ok!(rte_eth_dev_start(port_id));
 
     // disable rx/tx flow control
     // TODO: why?
 
-    debug!(?port_id, "port started, doing flow control");
+    trace!(?port_id, "port started, doing flow control");
     let mut fc_conf: MaybeUninit<rte_eth_fc_conf> = MaybeUninit::zeroed();
     dpdk_ok!(rte_eth_dev_flow_ctrl_get(port_id, fc_conf.as_mut_ptr()));
     (*fc_conf.as_mut_ptr()).mode = rte_eth_fc_mode_RTE_FC_NONE;
     dpdk_ok!(rte_eth_dev_flow_ctrl_set(port_id, fc_conf.as_mut_ptr()));
 
-    debug!(?port_id, "waiting for link up");
+    trace!(?port_id, "waiting for link up");
     wait_for_link_status_up(port_id)?;
-    debug!(?port_id, "link up");
     Ok(())
 }
 
@@ -312,13 +308,10 @@ fn dpdk_init_helper(num_cores: usize) -> Result<(Vec<*mut rte_mempool>, u16)> {
     // SAFETY: only initializes things.
     unsafe {
         let nb_ports = rte_eth_dev_count_avail();
+        info!(?nb_ports, "DPDK available ports",);
         if nb_ports <= 0 {
             bail!("DPDK INIT: No ports available.");
         }
-        info!(
-            "DPDK reports that {} ports (interfaces) are available",
-            nb_ports
-        );
 
         let mut default_pools: Vec<*mut rte_mempool> = Vec::new();
         for i in 0..num_cores {
@@ -330,14 +323,22 @@ fn dpdk_init_helper(num_cores: usize) -> Result<(Vec<*mut rte_mempool>, u16)> {
             default_pools.push(mbuf_pool);
         }
 
+        let mut found_port = None;
         let owner = RTE_ETH_DEV_NO_OWNER as u64;
         let mut p = rte_eth_find_next_owned_by(0, owner) as u16;
         while p < RTE_MAX_ETHPORTS as u16 {
-            initialize_dpdk_port(p, num_cores as u16, &default_pools)?;
+            if let Ok(_) = initialize_dpdk_port(p, num_cores as u16, &default_pools) {
+                found_port = Some(1);
+                break;
+            }
+
             p = rte_eth_find_next_owned_by(p + 1, owner) as u16;
         }
 
-        Ok((default_pools, nb_ports))
+        Ok((
+            default_pools,
+            found_port.ok_or_else(|| eyre!("No ports came up"))?,
+        ))
     }
 }
 
