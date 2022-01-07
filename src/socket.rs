@@ -128,6 +128,7 @@ pub struct DpdkIoKernel {
     ip_addr: u32,
     port: u16,
     mbuf_pool: *mut rte_mempool,
+    arp_table: HashMap<Ipv4Addr, MacAddress>,
     new_conns: Receiver<NewConn>,
     outgoing_pkts: Receiver<Msg>,
     conns: HashMap<u16, Sender<Msg>>,
@@ -164,6 +165,7 @@ impl DpdkIoKernel {
                 ip_addr: my_ip,
                 port,
                 mbuf_pool,
+                arp_table,
                 new_conns: new_conns_r,
                 outgoing_pkts: outgoing_pkts_r,
                 conns,
@@ -197,7 +199,7 @@ impl DpdkIoKernel {
             let mut num_valid = 0;
             for i in 0..num_received {
                 // first: parse if valid packet, and what the payload size is
-                let (is_valid, src_ip, src_port, dst_port, payload_length) =
+                let (is_valid, src_ether, src_ip, src_port, dst_port, payload_length) =
                     unsafe { parse_packet(rx_bufs[i], &self.eth_addr as _, self.ip_addr) };
                 if !is_valid {
                     unsafe { free_mbuf(rx_bufs[i]) };
@@ -206,10 +208,17 @@ impl DpdkIoKernel {
 
                 num_valid += 1;
                 trace!(?num_valid, "Received valid packet");
+
+                let [oct1, oct2, oct3, oct4] = src_ip.to_be_bytes();
+                let pkt_src_ip = Ipv4Addr::new(oct1, oct2, oct3, oct4);
+
+                // opportunistically update arp
+                self.arp_table.entry(pkt_src_ip).or_insert_with(|| {
+                    MacAddress::from_bytes(src_ether.addr_bytes.as_slice()).unwrap()
+                });
+
                 match self.conns.get(&dst_port) {
                     Some(ch) => {
-                        let [oct1, oct2, oct3, oct4] = src_ip.to_be_bytes();
-                        let pkt_src_ip = Ipv4Addr::new(oct1, oct2, oct3, oct4);
                         let pkt_src_addr = SocketAddrV4::new(pkt_src_ip, src_port);
                         let payload =
                             unsafe { mbuf_slice!(rx_bufs[i], TOTAL_HEADER_SIZE, payload_length) };
@@ -224,6 +233,10 @@ impl DpdkIoKernel {
                         trace!(?dst_port, "Got packet for unassigned port, dropping");
                     }
                 }
+
+                unsafe {
+                    rte_pktmbuf_free(rx_bufs[i]);
+                }
             }
 
             // 2. second, see if we have anything to send.
@@ -234,17 +247,28 @@ impl DpdkIoKernel {
                 port: src_port,
             }) = self.outgoing_pkts.try_recv()
             {
-                let to_ip = to_addr.ip().octets();
+                let to_ip = to_addr.ip();
                 let to_port = to_addr.port();
                 unsafe {
                     tx_bufs[i] = alloc_mbuf(self.mbuf_pool).unwrap();
+
+                    let dst_ether_addr: rte_ether_addr = match self.arp_table.get(to_ip) {
+                        Some(eth) => rte_ether_addr {
+                            addr_bytes: eth.to_array(),
+                        },
+                        None => {
+                            warn!(?to_ip, "Could not find IP in ARP table");
+                            continue;
+                        }
+                    };
+
                     // fill header
                     fill_in_packet_header(
                         tx_bufs[i],
                         &self.eth_addr as _,
-                        todo!(), // TODO need to hardcode an arp table
+                        &dst_ether_addr as _,
                         self.ip_addr,
-                        u32::from_be_bytes(to_ip),
+                        u32::from_be_bytes(to_ip.octets()),
                         src_port,
                         to_port,
                         buf.len(),

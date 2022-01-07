@@ -1,6 +1,6 @@
 use crate::bindings::*;
 use crate::utils;
-use color_eyre::eyre::{bail, ensure, Result, WrapErr};
+use color_eyre::eyre::{bail, ensure, eyre, Result, WrapErr};
 use std::{
     ffi::{CStr, CString},
     mem::MaybeUninit,
@@ -59,7 +59,7 @@ macro_rules! dpdk_check_not_failed (
 
 macro_rules! dpdk_ok (
     ($x: ident ($($arg: expr),*)) => {
-        dpdk_check(stringify!($x), $x($($arg),*), false).wrap_err("Error running dpdk function.")?
+        dpdk_check(stringify!($x), $x($($arg),*), false).wrap_err(eyre!("Error running dpdk function {}", stringify!($x)))?
     };
     ($x: ident ($($arg: expr),*), $y: ident ($($arg2: expr),*)) => {
         match dpdk_check(stringify!($x), $x($($arg),*)) {
@@ -182,6 +182,7 @@ fn wait_for_link_status_up(port_id: u16) -> Result<()> {
         unsafe { rte_delay_us_block(sleep_duration_ms.as_micros() as u32) };
     }
 
+    warn!(?port_id, "Link did not start");
     bail!("Link never came up");
 }
 
@@ -222,7 +223,7 @@ unsafe fn initialize_dpdk_port(
 
     // allocate and set up 1 RX queue per Ethernet port
     for i in 0..rx_rings {
-        debug!("Initializing ring {}", i);
+        debug!("Initializing rx ring {}", i);
         dpdk_ok!(rte_eth_rx_queue_setup(
             port_id,
             i,
@@ -234,6 +235,7 @@ unsafe fn initialize_dpdk_port(
     }
 
     for i in 0..tx_rings {
+        debug!("Initializing tx ring {}", i);
         dpdk_ok!(rte_eth_tx_queue_setup(
             port_id,
             i,
@@ -244,18 +246,21 @@ unsafe fn initialize_dpdk_port(
     }
 
     // start the ethernet port
+    debug!(?port_id, "starting port");
     dpdk_ok!(rte_eth_dev_start(port_id));
 
     // disable rx/tx flow control
     // TODO: why?
 
+    debug!(?port_id, "port started, doing flow control");
     let mut fc_conf: MaybeUninit<rte_eth_fc_conf> = MaybeUninit::zeroed();
     dpdk_ok!(rte_eth_dev_flow_ctrl_get(port_id, fc_conf.as_mut_ptr()));
     (*fc_conf.as_mut_ptr()).mode = rte_eth_fc_mode_RTE_FC_NONE;
     dpdk_ok!(rte_eth_dev_flow_ctrl_set(port_id, fc_conf.as_mut_ptr()));
 
+    debug!(?port_id, "waiting for link up");
     wait_for_link_status_up(port_id)?;
-
+    debug!(?port_id, "link up");
     Ok(())
 }
 
@@ -302,9 +307,7 @@ fn create_native_mempool(name: &str, nb_ports: u16) -> Result<*mut rte_mempool> 
 }
 
 /// Initializes DPDK ports, and memory pools.
-/// Returns two mempool types:
-/// (1) One that allocates mbufs with `MBUF_BUF_SIZE` of buffer space.
-/// (2) One that allocates empty mbuf structs, meant for attaching external data buffers.
+/// Returns mempool that allocates mbufs with `MBUF_BUF_SIZE` of buffer space.
 fn dpdk_init_helper(num_cores: usize) -> Result<(Vec<*mut rte_mempool>, u16)> {
     // SAFETY: only initializes things.
     unsafe {

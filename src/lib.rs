@@ -16,3 +16,5 @@ mod utils;
 // still-unsafe slightly higher-level interface than the one in `bindings`.
 mod socket;
 mod wrapper;
+
+pub use socket::{DpdkConn, DpdkIoKernel, DpdkIoKernelHandle};
