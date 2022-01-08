@@ -40,6 +40,10 @@ fn main() -> Result<()> {
                 let mut times = do_client(handle, SocketAddrV4::new(ip, port)).unwrap();
                 let (p5, p25, p50, p75, p95) = percentiles_us(&mut times);
                 info!(?p5, ?p25, ?p50, ?p75, ?p95, "done");
+                println!(
+                    "p5={:?}, p25={:?}, p50={:?}, p75={:?}, p95={:?}",
+                    p5, p25, p50, p75, p95
+                );
                 std::process::exit(0);
             }
             None => do_server(handle, port).unwrap(),
@@ -69,7 +73,7 @@ fn do_client(handle: DpdkIoKernelHandle, remote: SocketAddrV4) -> Result<Vec<Dur
     info!(?remote, "made client connection");
     let mut times = Vec::with_capacity(100);
     let start = Instant::now();
-    for i in 0..100 {
+    for i in 0..1000 {
         let msg = bincode::serialize(&TimeMsg::new(start))?;
         conn.send(remote, msg).wrap_err("send")?;
         info!(?i, "sent");

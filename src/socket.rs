@@ -247,7 +247,7 @@ impl DpdkIoKernel {
                 let (is_valid, src_ether, src_ip, src_port, dst_port, payload_length) =
                     unsafe { parse_packet(rx_bufs[i], &rte_eth_addr as _, my_ip) };
                 if !is_valid {
-                    unsafe { free_mbuf(rx_bufs[i]) };
+                    unsafe { rte_pktmbuf_free(rx_bufs[i]) };
                     continue;
                 }
 
