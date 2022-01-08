@@ -38,6 +38,8 @@ fn main() -> Result<()> {
         match client {
             Some(ip) => {
                 do_client(handle, SocketAddrV4::new(ip, port)).unwrap();
+                info!("done");
+                std::process::exit(0);
             }
             None => do_server(handle, port).unwrap(),
         }
@@ -60,13 +62,13 @@ fn do_iokernel(cfg: PathBuf, handle_s: flume::Sender<DpdkIoKernelHandle>) -> Res
     iokernel.run();
 }
 
+#[tracing::instrument(err, skip(handle))]
 fn do_client(handle: DpdkIoKernelHandle, remote: SocketAddrV4) -> Result<()> {
     let conn = handle.socket(None)?;
     info!(?remote, "made client connection");
     let buf = vec![97u8; 8];
 
     for i in 0..100 {
-        info!(?i, "sending");
         conn.send(remote, buf.clone()).wrap_err("send")?;
         info!(?i, "sent");
         let (from, _) = conn.recv().wrap_err("recv")?;
@@ -76,6 +78,7 @@ fn do_client(handle: DpdkIoKernelHandle, remote: SocketAddrV4) -> Result<()> {
     Ok(())
 }
 
+#[tracing::instrument(err, skip(handle))]
 fn do_server(handle: DpdkIoKernelHandle, port: u16) -> Result<()> {
     let conn = handle.socket(Some(port))?;
     info!(?port, "listening");
