@@ -56,7 +56,7 @@ fn do_iokernel(cfg: PathBuf, handle_s: flume::Sender<DpdkIoKernelHandle>) -> Res
 fn do_client(handle: DpdkIoKernelHandle, remote: SocketAddrV4) -> Result<()> {
     let conn = handle.socket(None)?;
     info!(?remote, "made client connection");
-    let buf = vec![12u8; 128];
+    let buf = vec![97u8; 8];
     for i in 0..100 {
         info!(?i, "sending");
         conn.send(remote, buf.clone()).wrap_err("send")?;

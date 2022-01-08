@@ -3,7 +3,11 @@
 //! At a high level, one thread is responsible for calling `wrapper::rx_burst` and distributing
 //! resulting packets, via channels, to the right `UdpDpdkSk`. Send-side is the same but in reverse.
 
-use crate::{bindings::*, utils::TOTAL_HEADER_SIZE, wrapper::*};
+use crate::{
+    bindings::*,
+    utils::{AddressInfo, HeaderInfo, TOTAL_HEADER_SIZE},
+    wrapper::*,
+};
 use ahash::AHashMap as HashMap;
 use color_eyre::{
     eyre::{bail, ensure, eyre, WrapErr},
@@ -16,7 +20,7 @@ use std::fs::read_to_string;
 use std::mem::zeroed;
 use std::net::{Ipv4Addr, SocketAddrV4};
 use std::sync::{Arc, Mutex};
-use tracing::{trace, warn};
+use tracing::{debug, trace, warn};
 
 #[derive(Debug)]
 pub struct Msg {
@@ -124,8 +128,8 @@ impl DpdkIoKernelHandle {
 /// There should only be one of these. It is responsible for calling `wrapper::tx_burst` and
 /// `wrapper::rx_burst`, and doing bookkeeping associated with tracking connections.
 pub struct DpdkIoKernel {
-    eth_addr: rte_ether_addr,
-    ip_addr: u32,
+    eth_addr: MacAddress,
+    ip_addr: Ipv4Addr,
     port: u16,
     mbuf_pool: *mut rte_mempool,
     arp_table: HashMap<Ipv4Addr, MacAddress>,
@@ -142,7 +146,7 @@ impl DpdkIoKernel {
     //   [net]
     //   ip = "10.1.1.2"
     pub fn new(config_path: std::path::PathBuf) -> Result<(Self, DpdkIoKernelHandle)> {
-        let (dpdk_config, ip_config, arp_table) = parse_cfg(config_path.as_path())?;
+        let (dpdk_config, ip_addr, arp_table) = parse_cfg(config_path.as_path())?;
         let (mbuf_pools, nb_ports) = dpdk_init(dpdk_config, 1)?;
 
         let mbuf_pool = mbuf_pools[0];
@@ -150,9 +154,7 @@ impl DpdkIoKernel {
 
         // what is my ethernet address (rte_ether_addr struct)
         let my_eth = get_my_macaddr(port)?;
-        // what is my IpAddr
-        let octets = ip_config.octets();
-        let my_ip: u32 = unsafe { make_ip(octets[0], octets[1], octets[2], octets[3]) };
+        let eth_addr = MacAddress::from_bytes(&my_eth.addr_bytes).wrap_err("Parse mac address")?;
 
         // make connection tracking state.
         let (new_conns_s, new_conns_r) = flume::unbounded();
@@ -161,8 +163,8 @@ impl DpdkIoKernel {
 
         Ok((
             Self {
-                eth_addr: my_eth,
-                ip_addr: my_ip,
+                eth_addr,
+                ip_addr,
                 port,
                 mbuf_pool,
                 arp_table,
@@ -186,6 +188,15 @@ impl DpdkIoKernel {
         let mut rx_bufs: [*mut rte_mbuf; RECEIVE_BURST_SIZE as usize] = unsafe { zeroed() };
         let mut tx_bufs: [*mut rte_mbuf; RECEIVE_BURST_SIZE as usize] = unsafe { zeroed() };
 
+        let rte_eth_addr = rte_ether_addr {
+            addr_bytes: self.eth_addr.to_array(),
+        };
+
+        let octets = self.ip_addr.octets();
+        let my_ip: u32 = unsafe { make_ip(octets[0], octets[1], octets[2], octets[3]) };
+
+        let mut ip_id = 1u16;
+
         loop {
             // 1. first try to receive.
             let num_received = unsafe {
@@ -200,7 +211,7 @@ impl DpdkIoKernel {
             for i in 0..num_received {
                 // first: parse if valid packet, and what the payload size is
                 let (is_valid, src_ether, src_ip, src_port, dst_port, payload_length) =
-                    unsafe { parse_packet(rx_bufs[i], &self.eth_addr as _, self.ip_addr) };
+                    unsafe { parse_packet(rx_bufs[i], &rte_eth_addr as _, my_ip) };
                 if !is_valid {
                     unsafe { free_mbuf(rx_bufs[i]) };
                     continue;
@@ -213,9 +224,9 @@ impl DpdkIoKernel {
                 let pkt_src_ip = Ipv4Addr::new(oct1, oct2, oct3, oct4);
 
                 // opportunistically update arp
-                self.arp_table.entry(pkt_src_ip).or_insert_with(|| {
-                    MacAddress::from_bytes(src_ether.addr_bytes.as_slice()).unwrap()
-                });
+                self.arp_table
+                    .entry(pkt_src_ip)
+                    .or_insert_with(|| MacAddress::from_bytes(&src_ether.addr_bytes).unwrap());
 
                 match self.conns.get(&dst_port) {
                     Some(ch) => {
@@ -250,37 +261,65 @@ impl DpdkIoKernel {
                 let to_ip = to_addr.ip();
                 let to_port = to_addr.port();
                 unsafe {
-                    tx_bufs[i] = alloc_mbuf(self.mbuf_pool).unwrap();
-
-                    let dst_ether_addr: rte_ether_addr = match self.arp_table.get(to_ip) {
-                        Some(eth) => rte_ether_addr {
-                            addr_bytes: eth.to_array(),
-                        },
+                    let dst_ether_addr = match self.arp_table.get(to_ip) {
+                        Some(eth) => eth,
                         None => {
                             warn!(?to_ip, "Could not find IP in ARP table");
                             continue;
                         }
                     };
 
+                    tx_bufs[i] = alloc_mbuf(self.mbuf_pool).unwrap();
+
+                    let src_info = AddressInfo {
+                        udp_port: src_port,
+                        ipv4_addr: self.ip_addr,
+                        ether_addr: self.eth_addr,
+                    };
+
+                    let dst_info = AddressInfo {
+                        udp_port: to_port,
+                        ipv4_addr: *to_ip,
+                        ether_addr: *dst_ether_addr,
+                    };
+
+                    trace!(?src_info, ?dst_info, "writing header");
+
                     // fill header
-                    fill_in_packet_header(
+                    let hdr_size = match fill_in_header(
                         tx_bufs[i],
-                        &self.eth_addr as _,
-                        &dst_ether_addr as _,
-                        self.ip_addr,
-                        u32::from_be_bytes(to_ip.octets()),
-                        src_port,
-                        to_port,
+                        &HeaderInfo { src_info, dst_info },
                         buf.len(),
-                    );
+                        ip_id,
+                    ) {
+                        Ok(s) => {
+                            ip_id += 1;
+                            ip_id %= 0xffff;
+                            s
+                        }
+                        Err(err) => {
+                            debug!(?err, "Error writing header");
+                            continue;
+                        }
+                    };
+
+                    let header_slice = mbuf_slice!(tx_bufs[i], 0, hdr_size);
+                    trace!(?header_slice, "headers");
 
                     // write payload
-                    let payload_slice = mbuf_slice!(tx_bufs[i], TOTAL_HEADER_SIZE, buf.len());
+                    let payload_slice = mbuf_slice!(tx_bufs[i], hdr_size, buf.len());
                     rte_memcpy_wrapper(
                         payload_slice.as_mut_ptr() as _,
                         buf.as_ptr() as _,
                         buf.len(),
                     );
+
+                    (*tx_bufs[i]).pkt_len = (hdr_size + buf.len()) as u32;
+                    (*tx_bufs[i]).data_len = buf.len() as u16;
+                    (*tx_bufs[i]).nb_segs = 1;
+
+                    let full_pkt = mbuf_slice!(tx_bufs[i], 0, hdr_size + buf.len());
+                    trace!(?full_pkt, "sending");
                 }
 
                 i += 1;

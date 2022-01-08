@@ -112,36 +112,6 @@ const TX_WTHRESH: u8 = 0;
 pub struct MempoolPtr(pub *mut rte_mempool);
 unsafe impl Send for MempoolPtr {}
 
-/// Constructs and sends a packet with an mbuf from the given mempool, copying the payload.
-pub unsafe fn get_mbuf_with_memcpy(
-    header_mempool: *mut rte_mempool,
-    header_info: &utils::HeaderInfo,
-    buf: &[u8],
-) -> Result<*mut rte_mbuf> {
-    trace!(header_mempool_avail=?rte_mempool_avail_count(header_mempool), len=buf.len(), "Copying single buffer into mbuf");
-    let header_mbuf =
-        alloc_mbuf(header_mempool).wrap_err("Unable to allocate mbuf from mempool.")?;
-    let data_offset = fill_in_header(header_mbuf, header_info, buf.len())
-        .wrap_err("unable to fill header info.")?;
-    trace!(
-        len = data_offset + buf.len(),
-        "Full length of packet being sent"
-    );
-    (*header_mbuf).data_len = (data_offset + buf.len()) as u16;
-    (*header_mbuf).pkt_len = (data_offset + buf.len()) as u32;
-    (*header_mbuf).next = ptr::null_mut();
-    (*header_mbuf).nb_segs = 1;
-
-    // copy the payload into the mbuf
-    let ctx_hdr_slice = mbuf_slice!(header_mbuf, data_offset, buf.len());
-    rte_memcpy_wrapper(
-        ctx_hdr_slice.as_mut_ptr() as _,
-        buf.as_ref().as_ptr() as _,
-        buf.len(),
-    );
-    Ok(header_mbuf)
-}
-
 fn dpdk_eal_init(eal_init: Vec<String>) -> Result<()> {
     let mut args = vec![];
     let mut ptrs = vec![];
@@ -387,26 +357,29 @@ pub unsafe fn alloc_mbuf(mempool: *mut rte_mempool) -> Result<*mut rte_mbuf> {
 /// * data_len - The payload size, as these headers depend on knowing the size of the upcoming
 /// payloads.
 #[inline]
-unsafe fn fill_in_header(
+pub(crate) unsafe fn fill_in_header(
     pkt: *mut rte_mbuf,
     header_info: &utils::HeaderInfo,
     data_len: usize,
+    ip_id: u16,
 ) -> Result<usize> {
     let eth_hdr_slice = mbuf_slice!(pkt, 0, utils::ETHERNET2_HEADER2_SIZE);
+    utils::write_eth_hdr(header_info, eth_hdr_slice)?;
+
     let ipv4_hdr_slice = mbuf_slice!(pkt, utils::ETHERNET2_HEADER2_SIZE, utils::IPV4_HEADER2_SIZE);
+    utils::write_ipv4_hdr(
+        header_info,
+        ipv4_hdr_slice,
+        data_len + utils::UDP_HEADER2_SIZE,
+        ip_id,
+    )?;
+
     let udp_hdr_slice = mbuf_slice!(
         pkt,
         utils::ETHERNET2_HEADER2_SIZE + utils::IPV4_HEADER2_SIZE,
         utils::UDP_HEADER2_SIZE
     );
-
     utils::write_udp_hdr(header_info, udp_hdr_slice, data_len)?;
-    utils::write_ipv4_hdr(
-        header_info,
-        ipv4_hdr_slice,
-        data_len + utils::UDP_HEADER2_SIZE,
-    )?;
-    utils::write_eth_hdr(header_info, eth_hdr_slice)?;
 
     Ok(utils::TOTAL_HEADER_SIZE)
 }

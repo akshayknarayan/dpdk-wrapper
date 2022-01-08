@@ -22,8 +22,8 @@ pub const TOTAL_HEADER_SIZE: usize =
 #[repr(u16)]
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 pub enum EtherType2 {
-    Arp = 0x806,
-    Ipv4 = 0x800,
+    Arp = 0x0806,
+    Ipv4 = 0x0800,
 }
 
 impl TryFrom<u16> for EtherType2 {
@@ -90,7 +90,8 @@ pub fn write_udp_hdr(header_info: &HeaderInfo, buf: &mut [u8], data_len: usize) 
     NetworkEndian::write_u16(&mut fixed_buf[2..4], header_info.dst_info.udp_port);
     NetworkEndian::write_u16(&mut fixed_buf[4..6], (UDP_HEADER2_SIZE + data_len) as u16);
     // no checksum
-    NetworkEndian::write_u16(&mut fixed_buf[6..8], 0);
+    //NetworkEndian::write_u16(&mut fixed_buf[6..8], 0);
+    fixed_buf[6..8].copy_from_slice(&[79, 173]);
     Ok(())
 }
 
@@ -113,11 +114,19 @@ fn ipv4_checksum(buf: &[u8]) -> Result<u16> {
 }
 
 #[inline]
-pub fn write_ipv4_hdr(header_info: &HeaderInfo, buf: &mut [u8], data_len: usize) -> Result<()> {
+pub fn write_ipv4_hdr(
+    header_info: &HeaderInfo,
+    buf: &mut [u8],
+    data_len: usize,
+    ip_id: u16,
+) -> Result<()> {
     // currently, this only sets some fields
     let buf: &mut [u8; IPV4_HEADER2_SIZE] = buf.try_into()?;
+    buf[..].copy_from_slice(&[0u8; IPV4_HEADER2_SIZE]);
+
     buf[0] = (IPV4_VERSION << 4) | IPV4_IHL_NO_OPTIONS; // version IHL
     NetworkEndian::write_u16(&mut buf[2..4], (IPV4_HEADER2_SIZE + data_len) as u16); // payload size
+    NetworkEndian::write_u16(&mut buf[4..6], 1 as u16); // IP ID
     buf[8] = IPDEFTTL; // time to live
     buf[9] = IPPROTO_UDP; // next_proto_id
 
@@ -131,7 +140,7 @@ pub fn write_ipv4_hdr(header_info: &HeaderInfo, buf: &mut [u8], data_len: usize)
 
 #[inline]
 pub fn write_eth_hdr(header_info: &HeaderInfo, buf: &mut [u8]) -> Result<()> {
-    //let buf: &mut [u8; ETHERNET2_HEADER2_SIZE] = buf.try_into()?;
+    let buf: &mut [u8; ETHERNET2_HEADER2_SIZE] = buf.try_into()?;
     buf[0..6].copy_from_slice(header_info.dst_info.ether_addr.as_bytes());
     buf[6..12].copy_from_slice(header_info.src_info.ether_addr.as_bytes());
     NetworkEndian::write_u16(&mut buf[12..14], EtherType2::Ipv4 as u16);
