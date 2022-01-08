@@ -425,16 +425,3 @@ pub unsafe fn tx_burst(
     trace!(?num_sent, "tx_burst");
     Ok(())
 }
-
-/// Frees the mbuf, returns it to it's original mempool.
-///
-/// Arguments:
-/// * pkt - *mut rte_mbuf to free.
-///
-/// Safety:
-/// `pkt` must be valid.
-#[inline]
-pub unsafe fn free_mbuf(pkt: *mut rte_mbuf) {
-    debug!(packet=?pkt, cur_refcnt=rte_pktmbuf_refcnt_read(pkt), "Called free_mbuf on packet");
-    rte_pktmbuf_refcnt_update_or_free(pkt, -1);
-}
