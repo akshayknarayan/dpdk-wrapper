@@ -1,6 +1,6 @@
 //! Use DpdkConn to send and receive packets.
 
-use color_eyre::{eyre::WrapErr, Report, Result};
+use color_eyre::{eyre::WrapErr, Result};
 use dpdk_wrapper::{DpdkIoKernel, DpdkIoKernelHandle};
 use std::net::{Ipv4Addr, SocketAddrV4};
 use std::path::PathBuf;
@@ -58,7 +58,6 @@ fn do_iokernel(cfg: PathBuf, handle_s: flume::Sender<DpdkIoKernelHandle>) -> Res
     };
     handle_s.send(handle).unwrap();
     iokernel.run();
-    Ok::<_, Report>(())
 }
 
 fn do_client(handle: DpdkIoKernelHandle, remote: SocketAddrV4) -> Result<()> {

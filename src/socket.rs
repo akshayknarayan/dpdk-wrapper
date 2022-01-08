@@ -23,13 +23,22 @@ use std::sync::{Arc, Mutex};
 use toml::Value;
 use tracing::{debug, trace, warn};
 
+/// A message to/from DPDK.
 #[derive(Debug)]
 pub struct Msg {
+    /// The local port.
     port: u16,
+    /// The remote address.
     addr: SocketAddrV4,
+    /// Payload.
     buf: Vec<u8>,
 }
 
+/// UDP Connection via DPDK.
+///
+/// Transmits packets over a channel to the [`DpdkIoKernel`] thread, which will actually transmit
+/// them. Created by calling [`DpdkIoKernelHandle::socket`]. When dropped, will free its reserved
+/// port.
 pub struct DpdkConn {
     local_port: u16,
     free_ports: Arc<Mutex<BTreeSet<u16>>>,
@@ -38,6 +47,7 @@ pub struct DpdkConn {
 }
 
 impl DpdkConn {
+    /// Send a packet.
     pub fn send(&self, to: SocketAddrV4, msg: Vec<u8>) -> Result<()> {
         self.outgoing_pkts.send(Msg {
             port: self.local_port,
@@ -69,6 +79,9 @@ struct NewConn {
     ch: Sender<Msg>,
 }
 
+/// Socket manager for [`DPDKIoKernel`].
+///
+/// Created by [`DpdkIoKernel::new`]. Tracks available ports for sockets to use.
 #[derive(Clone, Debug)]
 pub struct DpdkIoKernelHandle {
     free_ports: Arc<Mutex<BTreeSet<u16>>>,
@@ -85,6 +98,7 @@ impl DpdkIoKernelHandle {
         }
     }
 
+    /// Make a new UDP socket.
     pub fn socket(&self, bind: Option<u16>) -> Result<DpdkConn> {
         // assign a port.
         let mut free_ports_g = self.free_ports.lock().unwrap();
@@ -126,8 +140,8 @@ impl DpdkIoKernelHandle {
 
 /// Spin-polling DPDK datapath event loop.
 ///
-/// There should only be one of these. It is responsible for calling `wrapper::tx_burst` and
-/// `wrapper::rx_burst`, and doing bookkeeping associated with tracking connections.
+/// There should only be one of these. It is responsible for actually sending and receiving
+/// packets, and doing bookkeeping (mux/demux) associated with tracking sockets.
 pub struct DpdkIoKernel {
     eth_addr: MacAddress,
     ip_addr: Ipv4Addr,
@@ -140,12 +154,29 @@ pub struct DpdkIoKernel {
 }
 
 impl DpdkIoKernel {
-    /// Do global initialization
-    // config file example:
-    //   [dpdk]
-    //   eal_init = ["-n", "4", "-w", "0000:08:00.0","--proc-type=auto"]
-    //   [net]
-    //   ip = "10.1.1.2"
+    /// Do global initialization.
+    ///
+    /// `config_path` should be a TOML files with:
+    /// - "dpdk" table with "eal_init" key. "eal_init" should be a string array of DPDK init args.
+    /// - "net" table with "ip" key and "arp" list-of-tables.
+    ///   - "arp" entries should have "ip" and "mac" keys.
+    ///
+    /// # Example Config
+    /// ```toml
+    /// [dpdk]
+    /// eal_init = ["-n", "4", "--allow", "0000:99:00.0", "--vdev", "net_pcap0,tx_pcap=out.pcap"]
+    ///
+    /// [net]
+    /// ip = "1.2.3.4"
+    ///
+    ///   [[net.arp]]
+    ///   ip = "1.2.3.4"
+    ///   mac = "00:01:02:03:04:05"
+    ///
+    ///   [[net.arp]]
+    ///   ip = "4.3.2.1"
+    ///   mac = "05:04:03:02:01:00"
+    /// ```
     pub fn new(config_path: std::path::PathBuf) -> Result<(Self, DpdkIoKernelHandle)> {
         let (dpdk_config, ip_addr, arp_table) = parse_cfg(config_path.as_path())?;
         let (mbuf_pools, nb_ports) = dpdk_init(dpdk_config, 1)?;
@@ -179,13 +210,15 @@ impl DpdkIoKernel {
 
     /// Iokernel event loop.
     ///
+    /// This function will never return.
+    ///
     /// Responsibilities:
     /// 1. dpdk-poll for incoming packets,
     ///   1a. associate them with existing connections
     ///   1b. channel-send if connection, drop if not
     /// 2. channel-wait for outgoing packets, and transmit them.
     /// 3. channel-wait for new connections
-    pub fn run(mut self) {
+    pub fn run(mut self) -> ! {
         let mut rx_bufs: [*mut rte_mbuf; RECEIVE_BURST_SIZE as usize] = unsafe { zeroed() };
         let mut tx_bufs: [*mut rte_mbuf; RECEIVE_BURST_SIZE as usize] = unsafe { zeroed() };
 
@@ -424,9 +457,4 @@ fn parse_cfg(
 
             Ok((dpdk_cfg, ip, arp))
         })
-}
-
-pub struct UdpDpdkSk {
-    outgoing: flume::Sender<Vec<u8>>,
-    incoming: flume::Receiver<Vec<u8>>,
 }

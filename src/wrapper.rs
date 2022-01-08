@@ -86,11 +86,8 @@ pub const NUM_MBUFS: u16 = 8191;
 pub const MBUF_CACHE_SIZE: u16 = 250;
 const RX_RING_SIZE: u16 = 2048;
 const TX_RING_SIZE: u16 = 2048;
-pub const MAX_SCATTERS: usize = 33;
 pub const RECEIVE_BURST_SIZE: u16 = 16;
-pub const MEMPOOL_MAX_SIZE: usize = 65536;
 
-pub const RX_PACKET_LEN: u32 = 9216;
 pub const MBUF_BUF_SIZE: u32 = RTE_ETHER_MAX_JUMBO_FRAME_LEN + RTE_PKTMBUF_HEADROOM;
 pub const MBUF_PRIV_SIZE: usize = 8;
 /// RX and TX Prefetch, Host, and Write-back threshold values should be
@@ -186,6 +183,7 @@ unsafe fn initialize_dpdk_port(
     eth_dev_configure(port_id, rx_rings, tx_rings);
 
     // can be -1, which == SOCKET_ID_ANY, so cast is ok
+    static_assert!(SOCKET_ID_ANY == -1);
     let socket_id = rte_eth_dev_socket_id(port_id) as u32;
 
     // allocate and set up 1 RX queue per Ethernet port
@@ -426,115 +424,6 @@ pub unsafe fn tx_burst(
 
     trace!(?num_sent, "tx_burst");
     Ok(())
-}
-
-pub struct RxPkt {
-    idx: usize,
-    addr_info: utils::AddressInfo,
-    payload_length: usize,
-}
-
-/// Tries to receive packets on the given transmit queue for the given ethernet advice.
-///
-/// Returns RxPkt: (index into `rx_pkts`, addr info, payload length)
-/// Frees any invalid packets.  On error, bails out.
-///
-/// Arguments:
-/// * port_id - u16 - port_id corresponding to the ethernet device.
-/// * queue_id - u16 - index of the receive queue through which received packets will be sent. Must
-/// be in the range of queue ids configured via rte_eth_dev_configure().
-/// * rx_pkts - Address of an array, of size nb_pkts, of rte_mbuf data structure pointers, to put
-/// the received packets.
-/// * nb_pkts - Maximum burst size to receive.
-///
-/// Safety:
-/// * `rx_pkts` must be valid.
-#[inline]
-pub unsafe fn rx_burst(
-    port_id: u16,
-    queue_id: u16,
-    rx_pkts: *mut *mut rte_mbuf,
-    nb_pkts: u16,
-    my_addr_info: &utils::AddressInfo,
-) -> Result<Vec<RxPkt>> {
-    let num_received = rte_eth_rx_burst(port_id, queue_id, rx_pkts, nb_pkts);
-    Ok((0..num_received)
-        .filter_map(|i| {
-            let pkt = *(rx_pkts.offset(i as isize));
-            match check_valid_packet(pkt, my_addr_info) {
-                Some((addr_info, payload_length)) => Some(RxPkt {
-                    idx: i as usize,
-                    addr_info,
-                    payload_length,
-                }),
-                None => {
-                    trace!("Queue {} received invalid packet, idx {}", queue_id, i,);
-                    rte_pktmbuf_free(pkt);
-                    None
-                }
-            }
-        })
-        .collect())
-}
-
-/// Checks if the payload in the received mbuf is valid.
-/// This filters for:
-/// (1) packets with the right destination eth addr
-/// (2) packets with the protocol UDP in the ip header, and the right destination IP address.
-/// (3) packets with the right destination udp port in the udp header.
-/// Returns the msg ID, and header info for the parse packet.
-///
-/// Arguments:
-/// pkt - *mut rte_mbuf : pointer to rte_mbuf to check validity for.
-///
-/// Safety:
-/// * `pkt` must be valid.
-#[inline]
-unsafe fn check_valid_packet(
-    pkt: *mut rte_mbuf,
-    my_addr_info: &utils::AddressInfo,
-) -> Option<(utils::AddressInfo, usize)> {
-    let eth_hdr_slice = mbuf_slice!(pkt, 0, utils::ETHERNET2_HEADER2_SIZE);
-    let src_eth = match utils::check_eth_hdr(eth_hdr_slice, &my_addr_info.ether_addr) {
-        Ok((eth, _)) => eth,
-        Err(_) => {
-            return None;
-        }
-    };
-
-    let ipv4_hdr_slice = mbuf_slice!(pkt, utils::ETHERNET2_HEADER2_SIZE, utils::IPV4_HEADER2_SIZE);
-
-    let src_ip = match utils::check_ipv4_hdr(ipv4_hdr_slice, &my_addr_info.ipv4_addr) {
-        Ok((ip, _)) => ip,
-        Err(_) => {
-            return None;
-        }
-    };
-
-    let udp_hdr_slice = mbuf_slice!(
-        pkt,
-        utils::ETHERNET2_HEADER2_SIZE + utils::IPV4_HEADER2_SIZE,
-        utils::UDP_HEADER2_SIZE
-    );
-
-    let (src_port, udp_data_len) = match utils::check_udp_hdr(udp_hdr_slice, my_addr_info.udp_port)
-    {
-        Ok((port, _, size)) => (port, size),
-        Err(_) => {
-            return None;
-        }
-    };
-
-    Some((
-        (utils::AddressInfo::new(src_port, src_ip, src_eth)),
-        udp_data_len - 4,
-    ))
-}
-
-/// Safety:
-/// `pkt` must be valid.
-pub unsafe fn refcnt(pkt: *mut rte_mbuf) -> u16 {
-    rte_pktmbuf_refcnt_read(pkt)
 }
 
 /// Frees the mbuf, returns it to it's original mempool.

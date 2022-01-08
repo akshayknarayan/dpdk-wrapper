@@ -3,7 +3,6 @@ use color_eyre::eyre::{bail, Result};
 use eui48::MacAddress;
 use std::convert::{TryFrom, TryInto};
 use std::net::Ipv4Addr;
-use tracing::debug;
 
 // Header setting taken from Demikernel's catnip OS:
 // https://github.com/demikernel/demikernel/blob/master/src/rust/catnip/src/protocols/
@@ -13,7 +12,6 @@ pub const UDP_HEADER2_SIZE: usize = 8;
 pub const DEFAULT_IPV4_TTL: u8 = 64;
 pub const IPV4_IHL_NO_OPTIONS: u8 = 5;
 pub const IPV4_VERSION: u8 = 4;
-pub const IPDEFTTL: u8 = 64;
 pub const IPPROTO_UDP: u8 = 17;
 pub const HEADER_PADDING_SIZE: usize = 0;
 pub const TOTAL_HEADER_SIZE: usize =
@@ -57,30 +55,10 @@ impl Default for AddressInfo {
     }
 }
 
-impl AddressInfo {
-    pub fn new(port: u16, ipv4: Ipv4Addr, mac: MacAddress) -> AddressInfo {
-        AddressInfo {
-            udp_port: port,
-            ipv4_addr: ipv4,
-            ether_addr: mac,
-        }
-    }
-
-    pub fn get_outgoing(&self, dst_addr: &AddressInfo) -> HeaderInfo {
-        HeaderInfo::new(self.clone(), dst_addr.clone())
-    }
-}
-
 #[derive(Debug, PartialEq, Clone, Default, Copy)]
 pub struct HeaderInfo {
     pub src_info: AddressInfo,
     pub dst_info: AddressInfo,
-}
-
-impl HeaderInfo {
-    pub fn new(src_info: AddressInfo, dst_info: AddressInfo) -> HeaderInfo {
-        HeaderInfo { src_info, dst_info }
-    }
 }
 
 #[inline]
@@ -125,8 +103,8 @@ pub fn write_ipv4_hdr(
 
     buf[0] = (IPV4_VERSION << 4) | IPV4_IHL_NO_OPTIONS; // version IHL
     NetworkEndian::write_u16(&mut buf[2..4], (IPV4_HEADER2_SIZE + data_len) as u16); // payload size
-    NetworkEndian::write_u16(&mut buf[4..6], 1 as u16); // IP ID
-    buf[8] = IPDEFTTL; // time to live
+    NetworkEndian::write_u16(&mut buf[4..6], ip_id as u16); // IP ID
+    buf[8] = DEFAULT_IPV4_TTL; // time to live
     buf[9] = IPPROTO_UDP; // next_proto_id
 
     buf[12..16].copy_from_slice(&header_info.src_info.ipv4_addr.octets());
@@ -144,72 +122,4 @@ pub fn write_eth_hdr(header_info: &HeaderInfo, buf: &mut [u8]) -> Result<()> {
     buf[6..12].copy_from_slice(header_info.src_info.ether_addr.as_bytes());
     NetworkEndian::write_u16(&mut buf[12..14], EtherType2::Ipv4 as u16);
     Ok(())
-}
-
-#[inline]
-pub fn check_eth_hdr(
-    hdr_buf: &mut [u8],
-    my_ether: &MacAddress,
-) -> Result<(MacAddress, MacAddress)> {
-    let dst_addr = MacAddress::from_bytes(&hdr_buf[0..6])?;
-    let src_addr = MacAddress::from_bytes(&hdr_buf[6..12])?;
-    let ether_type = EtherType2::try_from(NetworkEndian::read_u16(&hdr_buf[12..14]))?;
-    if (dst_addr != *my_ether) && (dst_addr != MacAddress::broadcast()) {
-        debug!(
-            "(recv: dropped) Destination ether addr: {:?}, does not match mine {:?}, and is not broadcast.",
-            dst_addr, my_ether
-        );
-        bail!("Destination ether address does not match mine and is not broadcast.");
-    }
-
-    if ether_type != EtherType2::Ipv4 {
-        bail!("Not correct ether type.");
-    }
-
-    Ok((src_addr, dst_addr))
-}
-
-#[inline]
-pub fn check_ipv4_hdr(hdr_buf: &mut [u8], my_ip: &Ipv4Addr) -> Result<(Ipv4Addr, Ipv4Addr)> {
-    let src_addr = Ipv4Addr::from(NetworkEndian::read_u32(&hdr_buf[12..16]));
-    let dst_addr = Ipv4Addr::from(NetworkEndian::read_u32(&hdr_buf[16..20]));
-    if hdr_buf[9] != IPPROTO_UDP {
-        debug!("(recv: dropped)  ipv4 hdr does not have IPPROTO_UDP.");
-        bail!("(recv: dropped)  ipv4 hdr does not have IPPROTO_UDP.");
-    }
-
-    if dst_addr != *my_ip {
-        debug!(
-            "(recv: dropped) Dest ipv4 addr: {:?} does not match mine {:?}",
-            dst_addr, my_ip
-        );
-        bail!(
-            "Dest ipv4 addr: {:?} does not match mine {:?}",
-            dst_addr,
-            my_ip
-        );
-    }
-
-    Ok((src_addr, dst_addr))
-}
-
-#[inline]
-pub fn check_udp_hdr(hdr_buf: &mut [u8], my_udp_port: u16) -> Result<(u16, u16, usize)> {
-    let src_port = NetworkEndian::read_u16(&hdr_buf[0..2]);
-    let dst_port = NetworkEndian::read_u16(&hdr_buf[2..4]);
-    let data_len = NetworkEndian::read_u16(&hdr_buf[4..6]) as usize;
-
-    if dst_port != my_udp_port {
-        debug!(
-            "recv dropped) Dst udp port {} does not match ours {}.",
-            dst_port, my_udp_port
-        );
-        bail!(
-            "recv dropped) Dst udp port {} does not match ours {}.",
-            dst_port,
-            my_udp_port
-        );
-    }
-
-    Ok((src_port, dst_port, data_len))
 }
