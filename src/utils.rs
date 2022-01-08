@@ -90,8 +90,7 @@ pub fn write_udp_hdr(header_info: &HeaderInfo, buf: &mut [u8], data_len: usize) 
     NetworkEndian::write_u16(&mut fixed_buf[2..4], header_info.dst_info.udp_port);
     NetworkEndian::write_u16(&mut fixed_buf[4..6], (UDP_HEADER2_SIZE + data_len) as u16);
     // no checksum
-    //NetworkEndian::write_u16(&mut fixed_buf[6..8], 0);
-    fixed_buf[6..8].copy_from_slice(&[79, 173]);
+    NetworkEndian::write_u16(&mut fixed_buf[6..8], 0);
     Ok(())
 }
 

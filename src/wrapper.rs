@@ -185,8 +185,8 @@ unsafe fn initialize_dpdk_port(
 
     eth_dev_configure(port_id, rx_rings, tx_rings);
 
-    let socket_id =
-        dpdk_check_not_failed!(rte_eth_dev_socket_id(port_id), "Port id is out of range") as u32;
+    // can be -1, which == SOCKET_ID_ANY, so cast is ok
+    let socket_id = rte_eth_dev_socket_id(port_id) as u32;
 
     // allocate and set up 1 RX queue per Ethernet port
     for i in 0..rx_rings {
@@ -218,7 +218,6 @@ unsafe fn initialize_dpdk_port(
 
     // disable rx/tx flow control
     // TODO: why?
-
     trace!(?port_id, "port started, doing flow control");
     let mut fc_conf: MaybeUninit<rte_eth_fc_conf> = MaybeUninit::zeroed();
     dpdk_ok!(rte_eth_dev_flow_ctrl_get(port_id, fc_conf.as_mut_ptr()));
@@ -293,22 +292,24 @@ fn dpdk_init_helper(num_cores: usize) -> Result<(Vec<*mut rte_mempool>, u16)> {
             default_pools.push(mbuf_pool);
         }
 
-        let mut found_port = None;
+        let mut found_port = Err(eyre!("Tried {} ports, none came up", nb_ports));
         let owner = RTE_ETH_DEV_NO_OWNER as u64;
         let mut p = rte_eth_find_next_owned_by(0, owner) as u16;
         while p < RTE_MAX_ETHPORTS as u16 {
-            if let Ok(_) = initialize_dpdk_port(p, num_cores as u16, &default_pools) {
-                found_port = Some(1);
-                break;
+            match initialize_dpdk_port(p, num_cores as u16, &default_pools) {
+                Ok(_) => {
+                    found_port = Ok(1);
+                    break;
+                }
+                Err(e) => {
+                    found_port = found_port.map_err(|err| err.wrap_err(e));
+                }
             }
 
             p = rte_eth_find_next_owned_by(p + 1, owner) as u16;
         }
 
-        Ok((
-            default_pools,
-            found_port.ok_or_else(|| eyre!("No ports came up"))?,
-        ))
+        Ok((default_pools, found_port?))
     }
 }
 

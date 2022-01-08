@@ -66,9 +66,6 @@ fn do_client(handle: DpdkIoKernelHandle, remote: SocketAddrV4) -> Result<()> {
     info!(?remote, "made client connection");
     let buf = vec![97u8; 8];
 
-    use std::io::BufRead;
-    std::io::stdin().lock().lines().next().unwrap();
-
     for i in 0..100 {
         info!(?i, "sending");
         conn.send(remote, buf.clone()).wrap_err("send")?;
