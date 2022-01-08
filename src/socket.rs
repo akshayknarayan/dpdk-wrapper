@@ -20,6 +20,7 @@ use std::fs::read_to_string;
 use std::mem::zeroed;
 use std::net::{Ipv4Addr, SocketAddrV4};
 use std::sync::{Arc, Mutex};
+use toml::Value;
 use tracing::{debug, trace, warn};
 
 #[derive(Debug)]
@@ -303,9 +304,6 @@ impl DpdkIoKernel {
                         }
                     };
 
-                    let header_slice = mbuf_slice!(tx_bufs[i], 0, hdr_size);
-                    trace!(?header_slice, "headers");
-
                     // write payload
                     let payload_slice = mbuf_slice!(tx_bufs[i], hdr_size, buf.len());
                     rte_memcpy_wrapper(
@@ -315,11 +313,7 @@ impl DpdkIoKernel {
                     );
 
                     (*tx_bufs[i]).pkt_len = (hdr_size + buf.len()) as u32;
-                    (*tx_bufs[i]).data_len = buf.len() as u16;
-                    (*tx_bufs[i]).nb_segs = 1;
-
-                    let full_pkt = mbuf_slice!(tx_bufs[i], 0, hdr_size + buf.len());
-                    trace!(?full_pkt, "sending");
+                    (*tx_bufs[i]).data_len = (hdr_size + buf.len()) as u16;
                 }
 
                 i += 1;
@@ -350,23 +344,28 @@ fn parse_cfg(
     config_path: &std::path::Path,
 ) -> Result<(Vec<String>, Ipv4Addr, HashMap<Ipv4Addr, MacAddress>)> {
     let file_str = read_to_string(config_path)?;
-    let mut cfg: toml::Value = file_str.parse().wrap_err("parse TOML config")?;
+    let mut cfg: Value = file_str.parse().wrap_err("parse TOML config")?;
 
     fn dpdk_cfg(mut dpdk_cfg: toml::Value) -> Result<Vec<String>> {
-        dpdk_cfg
+        let tab = dpdk_cfg
             .as_table_mut()
-            .ok_or_else(|| eyre!("Dpdk config key not a table"))
-            .and_then(|tab| {
-                let (was_eal, dpdk_cfg): (Vec<_>, Vec<_>) = tab
-                    .iter()
-                    .map(|(k, v)| (k == "eal_init", format!("{}={}", k, v)))
-                    .unzip();
-                ensure!(
-                    was_eal.iter().any(|x| *x),
-                    "No eal_init entry in dpdk config"
-                );
-                Ok(dpdk_cfg)
-            })
+            .ok_or_else(|| eyre!("Dpdk config key not a table"))?;
+        let arr = tab
+            .remove("eal_init")
+            .ok_or_else(|| eyre!("No eal_init entry in dpdk config"))?;
+        match arr {
+            Value::Array(dpdk_cfg) => {
+                let r: Result<_> = dpdk_cfg
+                    .into_iter()
+                    .map(|s| match s {
+                        Value::String(s) => Ok(s),
+                        _ => Err(eyre!("eal_init value not a string array")),
+                    })
+                    .collect();
+                Ok(r?)
+            }
+            _ => bail!("eal_init value not a string array"),
+        }
     }
 
     fn net_cfg(mut net_cfg: toml::Value) -> Result<(Ipv4Addr, HashMap<Ipv4Addr, MacAddress>)> {
@@ -384,10 +383,10 @@ fn parse_cfg(
             .remove("arp")
             .ok_or_else(|| eyre!("No arp table in net"))?;
         let arp_table: Result<HashMap<_, _>, _> = match arp {
-            toml::value::Value::Array(arp_table) => arp_table
+            Value::Array(arp_table) => arp_table
                 .into_iter()
                 .map(|v| match v {
-                    toml::value::Value::Table(arp_entry) => {
+                    Value::Table(arp_entry) => {
                         let ip: Ipv4Addr = arp_entry
                             .get("ip")
                             .ok_or_else(|| eyre!("no ip in arp entry"))?
