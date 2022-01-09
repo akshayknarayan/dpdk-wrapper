@@ -86,6 +86,10 @@ pub struct BoundDpdkConn {
 }
 
 impl BoundDpdkConn {
+    pub fn remote_addr(&self) -> SocketAddrV4 {
+        self.remote_addr
+    }
+
     /// Send a packet.
     pub fn send(&self, msg: Vec<u8>) -> Result<()> {
         self.outgoing_pkts.send(Msg {
