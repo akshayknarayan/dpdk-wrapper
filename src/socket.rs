@@ -40,8 +40,7 @@ pub struct Msg {
 /// them. Created by calling [`DpdkIoKernelHandle::socket`]. When dropped, will free its reserved
 /// port.
 pub struct DpdkConn {
-    local_port: u16,
-    free_ports: Arc<Mutex<BTreeSet<u16>>>,
+    local_port: BoundPort,
     outgoing_pkts: Sender<Msg>,
     incoming_pkts: Receiver<Msg>,
 }
@@ -50,7 +49,7 @@ impl DpdkConn {
     /// Send a packet.
     pub fn send(&self, to: SocketAddrV4, msg: Vec<u8>) -> Result<()> {
         self.outgoing_pkts.send(Msg {
-            port: self.local_port,
+            port: self.local_port.bound_port,
             addr: to,
             buf: msg,
         })?;
@@ -62,21 +61,50 @@ impl DpdkConn {
     /// Returns (from_addr, payload)
     pub fn recv(&self) -> Result<(SocketAddrV4, Vec<u8>)> {
         let Msg { addr, buf, port } = self.incoming_pkts.recv()?;
-        assert_eq!(port, self.local_port, "Port mismatched");
+        assert_eq!(port, self.local_port.bound_port, "Port mismatched");
         Ok((addr, buf))
     }
 }
 
-impl Drop for DpdkConn {
+struct BoundPort {
+    bound_port: u16,
+    free_ports: Arc<Mutex<BTreeSet<u16>>>,
+}
+
+impl Drop for BoundPort {
     fn drop(&mut self) {
         // put the port back
-        self.free_ports.lock().unwrap().insert(self.local_port);
+        self.free_ports.lock().unwrap().insert(self.bound_port);
     }
 }
 
-struct NewConn {
-    local_port: u16,
-    ch: Sender<Msg>,
+pub struct BoundDpdkConn {
+    local_port: Arc<BoundPort>,
+    remote_addr: SocketAddrV4,
+    outgoing_pkts: Sender<Msg>,
+    incoming_pkts: Receiver<Msg>,
+}
+
+impl BoundDpdkConn {
+    /// Send a packet.
+    pub fn send(&self, msg: Vec<u8>) -> Result<()> {
+        self.outgoing_pkts.send(Msg {
+            port: self.local_port.bound_port,
+            addr: self.remote_addr,
+            buf: msg,
+        })?;
+        Ok(())
+    }
+
+    /// Receive a packet.
+    ///
+    /// Returns (from_addr, payload)
+    pub fn recv(&self) -> Result<(SocketAddrV4, Vec<u8>)> {
+        let Msg { addr, buf, port } = self.incoming_pkts.recv()?;
+        assert_eq!(port, self.local_port.bound_port, "Port mismatched");
+        assert_eq!(addr, self.remote_addr, "Remote address mismatched");
+        Ok((addr, buf))
+    }
 }
 
 /// Socket manager for [`DPDKIoKernel`].
@@ -85,12 +113,12 @@ struct NewConn {
 #[derive(Clone, Debug)]
 pub struct DpdkIoKernelHandle {
     free_ports: Arc<Mutex<BTreeSet<u16>>>,
-    new_conns: Sender<NewConn>,
+    new_conns: Sender<Conn>,
     outgoing_pkts: Sender<Msg>,
 }
 
 impl DpdkIoKernelHandle {
-    fn new(new_conns: Sender<NewConn>, outgoing_pkts: Sender<Msg>) -> Self {
+    fn new(new_conns: Sender<Conn>, outgoing_pkts: Sender<Msg>) -> Self {
         Self {
             free_ports: Arc::new(Mutex::new((1024..=65535).collect())), // all ports start free.
             new_conns,
@@ -123,18 +151,97 @@ impl DpdkIoKernelHandle {
         let out_ch = self.outgoing_pkts.clone();
 
         self.new_conns
-            .send(NewConn {
+            .send(Conn::Socket {
                 local_port: port,
                 ch: incoming_s,
             })
             .wrap_err("channel send to iokernel failed")?;
 
         Ok(DpdkConn {
-            local_port: port,
-            free_ports: self.free_ports.clone(),
+            local_port: BoundPort {
+                bound_port: port,
+                free_ports: self.free_ports.clone(),
+            },
             outgoing_pkts: out_ch,
             incoming_pkts: incoming_r,
         })
+    }
+
+    /// Make a UDP socket that demuxes packets not just by dst port, but also by src ip/src port.
+    pub fn accept(&self, port: u16) -> Result<Receiver<BoundDpdkConn>> {
+        // claim the port.
+        let mut free_ports_g = self.free_ports.lock().unwrap();
+        ensure!(free_ports_g.remove(&port), "Requested port not available");
+
+        let (accept_s, accept_r) = flume::bounded(16);
+        let out_ch = self.outgoing_pkts.clone();
+        let bound_port = Arc::new(BoundPort {
+            bound_port: port,
+            free_ports: self.free_ports.clone(),
+        });
+
+        self.new_conns
+            .send(Conn::Accept {
+                local_port: bound_port,
+                outgoing_pkts: out_ch,
+                ch: accept_s,
+                remotes: Default::default(),
+            })
+            .wrap_err("channel send to iokernel failed")?;
+
+        Ok(accept_r)
+    }
+}
+
+enum Conn {
+    Socket {
+        local_port: u16,
+        ch: Sender<Msg>,
+    },
+    Accept {
+        local_port: Arc<BoundPort>,
+        outgoing_pkts: Sender<Msg>,
+        ch: Sender<BoundDpdkConn>,
+        remotes: HashMap<SocketAddrV4, Sender<Msg>>,
+    },
+}
+
+impl Conn {
+    fn local_port(&self) -> u16 {
+        match self {
+            Conn::Socket { local_port, .. } => *local_port,
+            Conn::Accept { local_port, .. } => local_port.bound_port,
+        }
+    }
+
+    fn got_packet(&mut self, msg: Msg) -> Result<()> {
+        match self {
+            Conn::Socket { ch, .. } => {
+                ch.send(msg)?;
+            }
+            Conn::Accept {
+                local_port,
+                outgoing_pkts,
+                remotes,
+                ch,
+            } => {
+                let mut new_conn_res = Ok(());
+                let msg_sender = remotes.entry(msg.addr).or_insert_with(|| {
+                    let (cn_s, cn_r) = flume::bounded(16);
+                    new_conn_res = ch.send(BoundDpdkConn {
+                        local_port: Arc::clone(local_port),
+                        remote_addr: msg.addr,
+                        outgoing_pkts: outgoing_pkts.clone(),
+                        incoming_pkts: cn_r,
+                    });
+                    cn_s
+                });
+                new_conn_res?;
+                msg_sender.send(msg)?;
+            }
+        }
+
+        Ok(())
     }
 }
 
@@ -148,9 +255,9 @@ pub struct DpdkIoKernel {
     port: u16,
     mbuf_pool: *mut rte_mempool,
     arp_table: HashMap<Ipv4Addr, MacAddress>,
-    new_conns: Receiver<NewConn>,
+    new_conns: Receiver<Conn>,
     outgoing_pkts: Receiver<Msg>,
-    conns: HashMap<u16, Sender<Msg>>,
+    conns: HashMap<u16, Conn>,
 }
 
 impl DpdkIoKernel {
@@ -262,7 +369,7 @@ impl DpdkIoKernel {
                     .entry(pkt_src_ip)
                     .or_insert_with(|| MacAddress::from_bytes(&src_ether.addr_bytes).unwrap());
 
-                match self.conns.get(&dst_port) {
+                match self.conns.get_mut(&dst_port) {
                     Some(ch) => {
                         let pkt_src_addr = SocketAddrV4::new(pkt_src_ip, src_port);
                         let payload =
@@ -272,7 +379,8 @@ impl DpdkIoKernel {
                             addr: pkt_src_addr,
                             buf: payload.to_vec(),
                         };
-                        ch.send(msg).unwrap();
+
+                        ch.got_packet(msg).unwrap();
                     }
                     None => {
                         trace!(?dst_port, "Got packet for unassigned port, dropping");
@@ -363,8 +471,9 @@ impl DpdkIoKernel {
             }
 
             // 3. third, check for new connections
-            while let Ok(NewConn { local_port, ch }) = self.new_conns.try_recv() {
-                if let Some(c) = self.conns.insert(local_port, ch) {
+            while let Ok(conn) = self.new_conns.try_recv() {
+                let local_port = conn.local_port();
+                if let Some(c) = self.conns.insert(local_port, conn) {
                     warn!(?local_port, "Port double allocated");
                     self.conns.insert(local_port, c);
                 }

@@ -29,4 +29,4 @@ mod utils;
 mod socket;
 mod wrapper;
 
-pub use socket::{DpdkConn, DpdkIoKernel, DpdkIoKernelHandle};
+pub use socket::{BoundDpdkConn, DpdkConn, DpdkIoKernel, DpdkIoKernelHandle, Msg};
