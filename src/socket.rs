@@ -56,11 +56,28 @@ impl DpdkConn {
         Ok(())
     }
 
+    pub async fn send_async(&self, to: SocketAddrV4, msg: Vec<u8>) -> Result<()> {
+        self.outgoing_pkts
+            .send_async(Msg {
+                port: self.local_port.bound_port,
+                addr: to,
+                buf: msg,
+            })
+            .await?;
+        Ok(())
+    }
+
     /// Receive a packet.
     ///
     /// Returns (from_addr, payload)
     pub fn recv(&self) -> Result<(SocketAddrV4, Vec<u8>)> {
         let Msg { addr, buf, port } = self.incoming_pkts.recv()?;
+        assert_eq!(port, self.local_port.bound_port, "Port mismatched");
+        Ok((addr, buf))
+    }
+
+    pub async fn recv_async(&self) -> Result<(SocketAddrV4, Vec<u8>)> {
+        let Msg { addr, buf, port } = self.incoming_pkts.recv_async().await?;
         assert_eq!(port, self.local_port.bound_port, "Port mismatched");
         Ok((addr, buf))
     }
