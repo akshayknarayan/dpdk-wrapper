@@ -17,6 +17,7 @@ use eui48::MacAddress;
 use flume::{Receiver, Sender};
 use std::collections::BTreeSet;
 use std::fs::read_to_string;
+use std::future::Future;
 use std::mem::zeroed;
 use std::net::{Ipv4Addr, SocketAddrV4};
 use std::sync::{Arc, Mutex};
@@ -56,15 +57,22 @@ impl DpdkConn {
         Ok(())
     }
 
-    pub async fn send_async(&self, to: SocketAddrV4, msg: Vec<u8>) -> Result<()> {
-        self.outgoing_pkts
-            .send_async(Msg {
-                port: self.local_port.bound_port,
+    pub fn send_async(
+        &self,
+        to: SocketAddrV4,
+        msg: Vec<u8>,
+    ) -> impl Future<Output = Result<()>> + Send + 'static {
+        let ch = self.outgoing_pkts.clone();
+        let port = self.local_port.bound_port;
+        async move {
+            ch.send_async(Msg {
+                port,
                 addr: to,
                 buf: msg,
             })
             .await?;
-        Ok(())
+            Ok(())
+        }
     }
 
     /// Receive a packet.
@@ -76,10 +84,16 @@ impl DpdkConn {
         Ok((addr, buf))
     }
 
-    pub async fn recv_async(&self) -> Result<(SocketAddrV4, Vec<u8>)> {
-        let Msg { addr, buf, port } = self.incoming_pkts.recv_async().await?;
-        assert_eq!(port, self.local_port.bound_port, "Port mismatched");
-        Ok((addr, buf))
+    pub fn recv_async(
+        &self,
+    ) -> impl Future<Output = Result<(SocketAddrV4, Vec<u8>)>> + Send + 'static {
+        let ch = self.incoming_pkts.clone();
+        let p = self.local_port.bound_port;
+        async move {
+            let Msg { addr, buf, port } = ch.recv_async().await?;
+            assert_eq!(port, p, "Port mismatched");
+            Ok((addr, buf))
+        }
     }
 }
 
