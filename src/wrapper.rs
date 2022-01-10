@@ -83,28 +83,12 @@ unsafe fn print_error() -> String {
 /// Constants related to DPDK
 pub const NUM_MBUFS: u16 = 8191;
 pub const MBUF_CACHE_SIZE: u16 = 250;
-//const RX_RING_SIZE: u16 = 2048;
-//const TX_RING_SIZE: u16 = 2048;
 const RX_RING_SIZE: u16 = 256;
 const TX_RING_SIZE: u16 = 256;
 pub const RECEIVE_BURST_SIZE: u16 = 16;
 
 pub const MBUF_BUF_SIZE: u32 = RTE_ETHER_MAX_JUMBO_FRAME_LEN + RTE_PKTMBUF_HEADROOM;
 pub const MBUF_PRIV_SIZE: usize = 0;
-/// RX and TX Prefetch, Host, and Write-back threshold values should be
-/// carefully set for optimal performance. Consult the network
-/// controller's datasheet and supporting DPDK documentation for guidance
-/// on how these parameters should be set.
-const RX_PTHRESH: u8 = 8;
-const RX_HTHRESH: u8 = 8;
-const RX_WTHRESH: u8 = 0;
-
-/// These default values are optimized for use with the Intel(R) 82599 10 GbE
-/// Controller and the DPDK ixgbe PMD. Consider using other values for other
-/// network controllers and/or network drivers.
-const TX_PTHRESH: u8 = 0;
-const TX_HTHRESH: u8 = 0;
-const TX_WTHRESH: u8 = 0;
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub struct MempoolPtr(pub *mut rte_mempool);
@@ -167,21 +151,26 @@ unsafe fn initialize_dpdk_port(
     assert_eq!(rte_eth_dev_is_valid_port(port_id), 1);
     let rx_rings: u16 = num_queues;
     let tx_rings: u16 = num_queues;
-    let nb_rxd = RX_RING_SIZE;
-    let nb_txd = TX_RING_SIZE;
-
-    let mut rx_conf: MaybeUninit<rte_eth_rxconf> = MaybeUninit::zeroed();
-    (*rx_conf.as_mut_ptr()).rx_thresh.pthresh = RX_PTHRESH;
-    (*rx_conf.as_mut_ptr()).rx_thresh.hthresh = RX_HTHRESH;
-    (*rx_conf.as_mut_ptr()).rx_thresh.wthresh = RX_WTHRESH;
-    (*rx_conf.as_mut_ptr()).rx_free_thresh = 32;
-
-    let mut tx_conf: MaybeUninit<rte_eth_txconf> = MaybeUninit::zeroed();
-    (*tx_conf.as_mut_ptr()).tx_thresh.pthresh = TX_PTHRESH;
-    (*tx_conf.as_mut_ptr()).tx_thresh.hthresh = TX_HTHRESH;
-    (*tx_conf.as_mut_ptr()).tx_thresh.wthresh = TX_WTHRESH;
-
     eth_dev_configure(port_id, rx_rings, tx_rings);
+
+    let mut nb_rxd = RX_RING_SIZE;
+    let mut nb_txd = TX_RING_SIZE;
+    dpdk_ok!(rte_eth_dev_adjust_nb_rx_tx_desc(
+        port_id,
+        &mut nb_rxd as _,
+        &mut nb_txd as _
+    ));
+
+    let mut dev_info = MaybeUninit::zeroed();
+    rte_eth_dev_info_get(port_id, dev_info.as_mut_ptr());
+    let dev_info: rte_eth_dev_info = dev_info.assume_init();
+
+    let mut rx_conf = dev_info.default_rxconf;
+    rx_conf.rx_free_thresh = 64;
+
+    let mut tx_conf = dev_info.default_txconf;
+    tx_conf.tx_rs_thresh = 64;
+    tx_conf.tx_free_thresh = 64;
 
     // can be -1, which == SOCKET_ID_ANY, so cast is ok
     static_assert!(SOCKET_ID_ANY == -1);
@@ -195,7 +184,7 @@ unsafe fn initialize_dpdk_port(
             i,
             nb_rxd,
             socket_id,
-            rx_conf.as_mut_ptr(),
+            &mut rx_conf as _,
             rx_mbuf_pools[i as usize]
         ));
     }
@@ -207,7 +196,7 @@ unsafe fn initialize_dpdk_port(
             i,
             nb_txd,
             socket_id,
-            tx_conf.as_mut_ptr()
+            &mut tx_conf as _
         ));
     }
 
