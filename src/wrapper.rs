@@ -84,8 +84,10 @@ unsafe fn print_error() -> String {
 /// Constants related to DPDK
 pub const NUM_MBUFS: u16 = 8191;
 pub const MBUF_CACHE_SIZE: u16 = 250;
-const RX_RING_SIZE: u16 = 2048;
-const TX_RING_SIZE: u16 = 2048;
+//const RX_RING_SIZE: u16 = 2048;
+//const TX_RING_SIZE: u16 = 2048;
+const RX_RING_SIZE: u16 = 256;
+const TX_RING_SIZE: u16 = 256;
 pub const RECEIVE_BURST_SIZE: u16 = 16;
 
 pub const MBUF_BUF_SIZE: u32 = RTE_ETHER_MAX_JUMBO_FRAME_LEN + RTE_PKTMBUF_HEADROOM;
