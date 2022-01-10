@@ -393,6 +393,7 @@ impl DpdkIoKernel {
     pub fn run(mut self) -> ! {
         let mut rx_bufs: [*mut rte_mbuf; RECEIVE_BURST_SIZE as usize] = unsafe { zeroed() };
         let mut tx_bufs: [*mut rte_mbuf; RECEIVE_BURST_SIZE as usize] = unsafe { zeroed() };
+        let mut ch_bufs: Vec<Vec<u8>> = vec![Vec::with_capacity(512); 64];
 
         let rte_eth_addr = rte_ether_addr {
             addr_bytes: self.eth_addr.to_array(),
@@ -439,10 +440,14 @@ impl DpdkIoKernel {
                         let pkt_src_addr = SocketAddrV4::new(pkt_src_ip, src_port);
                         let payload =
                             unsafe { mbuf_slice!(rx_bufs[i], TOTAL_HEADER_SIZE, payload_length) };
+                        // try to use one of our preallocated Vecs. If there aren't any, then we
+                        // allocate (with `to_vec`)
+                        let mut buf = ch_bufs.pop().unwrap_or_else(|| payload.to_vec());
+                        buf.extend_from_slice(&payload);
                         let msg = Msg {
                             port: dst_port,
                             addr: pkt_src_addr,
-                            buf: payload.to_vec(),
+                            buf,
                         };
 
                         ch.got_packet(msg).unwrap();
@@ -520,6 +525,11 @@ impl DpdkIoKernel {
 
                     (*tx_bufs[i]).pkt_len = (hdr_size + buf.len()) as u32;
                     (*tx_bufs[i]).data_len = (hdr_size + buf.len()) as u16;
+
+                    // we're done with buf now, we can take it for our pool
+                    let mut buf = buf;
+                    buf.clear();
+                    ch_bufs.push(buf);
                 }
 
                 i += 1;
