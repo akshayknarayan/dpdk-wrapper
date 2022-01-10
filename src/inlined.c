@@ -144,15 +144,15 @@ void eth_dev_configure_(uint16_t port_id, uint16_t rx_rings, uint16_t tx_rings) 
     fprintf(stderr, "Dev info MTU:%u\n", mtu);
     struct rte_eth_conf port_conf = {};
     port_conf.rxmode.max_rx_pkt_len = RX_PACKET_LEN;
-
     port_conf.rxmode.offloads = DEV_RX_OFFLOAD_JUMBO_FRAME | DEV_RX_OFFLOAD_IPV4_CKSUM;
     port_conf.rxmode.mq_mode = ETH_MQ_RX_RSS | ETH_MQ_RX_RSS_FLAG;
     //port_conf.rxmode.mq_mode = ETH_MQ_RX_NONE;
-    port_conf.rx_adv_conf.rss_conf.rss_key = sym_rss_key;
-    port_conf.rx_adv_conf.rss_conf.rss_key_len = 40;
-    port_conf.rx_adv_conf.rss_conf.rss_hf = ETH_RSS_UDP | ETH_RSS_IP;
+    port_conf.rx_adv_conf.rss_conf.rss_key = NULL;
+    //port_conf.rx_adv_conf.rss_conf.rss_key_len = 40;
+    //port_conf.rx_adv_conf.rss_conf.rss_hf = ETH_RSS_UDP | ETH_RSS_IP;
+    port_conf.rx_adv_conf.rss_conf.rss_hf = ETH_RSS_NONFRAG_IPV4_TCP | ETH_RSS_NONFRAG_IPV4_UDP;
     port_conf.txmode.offloads = DEV_TX_OFFLOAD_MULTI_SEGS | DEV_TX_OFFLOAD_IPV4_CKSUM | DEV_TX_OFFLOAD_UDP_CKSUM;
-    port_conf.txmode.mq_mode = ETH_MQ_TX_NONE;
+    //port_conf.txmode.mq_mode = ETH_MQ_TX_NONE;
 
     printf("port_id: %u, rx_rings; %u, tx_rings: %u\n", port_id, rx_rings, tx_rings);
     rte_eth_dev_configure(port_id, rx_rings, tx_rings, &port_conf);
