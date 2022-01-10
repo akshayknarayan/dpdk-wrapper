@@ -131,6 +131,24 @@ impl BoundDpdkConn {
         Ok(())
     }
 
+    pub fn send_async(
+        &self,
+        to: SocketAddrV4,
+        msg: Vec<u8>,
+    ) -> impl Future<Output = Result<()>> + Send + 'static {
+        let ch = self.outgoing_pkts.clone();
+        let port = self.local_port.bound_port;
+        async move {
+            ch.send_async(Msg {
+                port,
+                addr: to,
+                buf: msg,
+            })
+            .await?;
+            Ok(())
+        }
+    }
+
     /// Receive a packet.
     ///
     /// Returns (from_addr, payload)
@@ -139,6 +157,18 @@ impl BoundDpdkConn {
         assert_eq!(port, self.local_port.bound_port, "Port mismatched");
         assert_eq!(addr, self.remote_addr, "Remote address mismatched");
         Ok((addr, buf))
+    }
+
+    pub fn recv_async(
+        &self,
+    ) -> impl Future<Output = Result<(SocketAddrV4, Vec<u8>)>> + Send + 'static {
+        let ch = self.incoming_pkts.clone();
+        let p = self.local_port.bound_port;
+        async move {
+            let Msg { addr, buf, port } = ch.recv_async().await?;
+            assert_eq!(port, p, "Port mismatched");
+            Ok((addr, buf))
+        }
     }
 }
 
