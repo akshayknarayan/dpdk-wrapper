@@ -4,7 +4,6 @@ use color_eyre::eyre::{bail, ensure, eyre, Result, WrapErr};
 use std::{
     ffi::{CStr, CString},
     mem::MaybeUninit,
-    ptr,
     time::Duration,
 };
 use tracing::{debug, info, trace, warn};
@@ -91,7 +90,7 @@ const TX_RING_SIZE: u16 = 256;
 pub const RECEIVE_BURST_SIZE: u16 = 16;
 
 pub const MBUF_BUF_SIZE: u32 = RTE_ETHER_MAX_JUMBO_FRAME_LEN + RTE_PKTMBUF_HEADROOM;
-pub const MBUF_PRIV_SIZE: usize = 8;
+pub const MBUF_PRIV_SIZE: usize = 0;
 /// RX and TX Prefetch, Host, and Write-back threshold values should be
 /// carefully set for optimal performance. Consult the network
 /// controller's datasheet and supporting DPDK documentation for guidance
@@ -254,15 +253,6 @@ pub fn create_mempool(
         }
 
         ensure!(!mbuf_pool.is_null(), "mbuf pool null");
-
-        // initialize private data
-        if rte_mempool_obj_iter(mbuf_pool, Some(custom_init_priv()), ptr::null_mut())
-            != (num_values as u16 * nb_ports) as u32
-        {
-            rte_mempool_free(mbuf_pool);
-            bail!("Not able to initialize private data in pool: failed on custom_init_priv.");
-        }
-
         Ok(mbuf_pool)
     }
 }
