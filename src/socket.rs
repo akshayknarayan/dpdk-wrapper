@@ -301,8 +301,21 @@ impl Conn {
                     });
                     cn_s
                 });
-                new_conn_res?;
-                msg_sender.send(msg)?;
+                new_conn_res.wrap_err("Could not send to new connections receiver")?;
+
+                if let Err(send_err) = msg_sender.send(msg) {
+                    remotes.remove(&from_addr).unwrap();
+                    debug!(sk=?laddr, ?from_addr, "Incoming channel dropped, resetting port");
+                    let (cn_s, cn_r) = flume::bounded(16);
+                    conns
+                        .send(ShenangoUdpSk {
+                            outgoing: outgoing.clone(),
+                            incoming: cn_r,
+                        })
+                        .unwrap();
+                    cn_s.send(send_err.into_inner()).unwrap(); // cannot fail since we just made cn_r
+                    remotes.insert(from_addr, cn_s);
+                }
             }
         }
 
