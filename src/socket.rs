@@ -102,6 +102,12 @@ struct BoundPort {
     free_ports: Arc<Mutex<BTreeSet<u16>>>,
 }
 
+impl std::fmt::Debug for BoundPort {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.bound_port.fmt(f)
+    }
+}
+
 impl Drop for BoundPort {
     fn drop(&mut self) {
         // put the port back
@@ -290,12 +296,13 @@ impl Conn {
                 remotes,
                 ch,
             } => {
+                let from_addr = msg.addr;
                 let mut new_conn_res = Ok(());
-                let msg_sender = remotes.entry(msg.addr).or_insert_with(|| {
+                let msg_sender = remotes.entry(from_addr).or_insert_with(|| {
                     let (cn_s, cn_r) = flume::bounded(16);
                     new_conn_res = ch.send(BoundDpdkConn {
                         local_port: Arc::clone(local_port),
-                        remote_addr: msg.addr,
+                        remote_addr: from_addr,
                         outgoing_pkts: outgoing_pkts.clone(),
                         incoming_pkts: cn_r,
                     });
@@ -305,14 +312,19 @@ impl Conn {
 
                 if let Err(send_err) = msg_sender.send(msg) {
                     remotes.remove(&from_addr).unwrap();
-                    debug!(sk=?laddr, ?from_addr, "Incoming channel dropped, resetting port");
+                    debug!(
+                        ?local_port,
+                        ?from_addr,
+                        "Incoming channel dropped, resetting port"
+                    );
                     let (cn_s, cn_r) = flume::bounded(16);
-                    conns
-                        .send(ShenangoUdpSk {
-                            outgoing: outgoing.clone(),
-                            incoming: cn_r,
-                        })
-                        .unwrap();
+                    ch.send(BoundDpdkConn {
+                        local_port: Arc::clone(local_port),
+                        remote_addr: from_addr,
+                        outgoing_pkts: outgoing_pkts.clone(),
+                        incoming_pkts: cn_r,
+                    })
+                    .unwrap();
                     cn_s.send(send_err.into_inner()).unwrap(); // cannot fail since we just made cn_r
                     remotes.insert(from_addr, cn_s);
                 }
