@@ -188,6 +188,8 @@ pub struct DpdkIoKernelHandle {
     outgoing_pkts: Sender<Msg>,
 }
 
+const CHANNEL_SIZE: usize = 128;
+
 impl DpdkIoKernelHandle {
     fn new(new_conns: Sender<Conn>, outgoing_pkts: Sender<Msg>) -> Self {
         Self {
@@ -224,7 +226,7 @@ impl DpdkIoKernelHandle {
             }
         };
 
-        let (incoming_s, incoming_r) = flume::bounded(16);
+        let (incoming_s, incoming_r) = flume::bounded(CHANNEL_SIZE);
         let out_ch = self.outgoing_pkts.clone();
 
         self.new_conns
@@ -305,7 +307,7 @@ impl Conn {
                 let from_addr = msg.addr;
                 let mut new_conn_res = Ok(());
                 let msg_sender = remotes.entry(from_addr).or_insert_with(|| {
-                    let (cn_s, cn_r) = flume::bounded(16);
+                    let (cn_s, cn_r) = flume::bounded(CHANNEL_SIZE);
                     new_conn_res = ch.send(BoundDpdkConn {
                         local_port: Arc::clone(local_port),
                         remote_addr: from_addr,
@@ -323,7 +325,7 @@ impl Conn {
                         ?from_addr,
                         "Incoming channel dropped, resetting port"
                     );
-                    let (cn_s, cn_r) = flume::bounded(16);
+                    let (cn_s, cn_r) = flume::bounded(CHANNEL_SIZE);
                     ch.send(BoundDpdkConn {
                         local_port: Arc::clone(local_port),
                         remote_addr: from_addr,
@@ -455,7 +457,6 @@ impl DpdkIoKernel {
                 }
 
                 num_valid += 1;
-                trace!(?num_valid, "Received valid packet");
 
                 let [oct1, oct2, oct3, oct4] = src_ip.to_be_bytes();
                 let pkt_src_ip = Ipv4Addr::new(oct1, oct2, oct3, oct4);
@@ -486,6 +487,10 @@ impl DpdkIoKernel {
                 unsafe {
                     rte_pktmbuf_free(rx_bufs[i]);
                 }
+            }
+
+            if num_valid > 0 {
+                trace!(?num_valid, "Received valid packets");
             }
 
             // 2. second, see if we have anything to send.
