@@ -15,7 +15,7 @@ use color_eyre::{
 };
 use eui48::MacAddress;
 use flume::{Receiver, Sender};
-use std::collections::BTreeSet;
+use std::collections::VecDeque;
 use std::fs::read_to_string;
 use std::future::Future;
 use std::mem::zeroed;
@@ -99,7 +99,7 @@ impl DpdkConn {
 
 struct BoundPort {
     bound_port: u16,
-    free_ports: Arc<Mutex<BTreeSet<u16>>>,
+    free_ports: Arc<Mutex<VecDeque<u16>>>,
 }
 
 impl std::fmt::Debug for BoundPort {
@@ -111,7 +111,7 @@ impl std::fmt::Debug for BoundPort {
 impl Drop for BoundPort {
     fn drop(&mut self) {
         // put the port back
-        self.free_ports.lock().unwrap().insert(self.bound_port);
+        self.free_ports.lock().unwrap().push_back(self.bound_port);
     }
 }
 
@@ -183,7 +183,7 @@ impl BoundDpdkConn {
 /// Created by [`DpdkIoKernel::new`]. Tracks available ports for sockets to use.
 #[derive(Clone, Debug)]
 pub struct DpdkIoKernelHandle {
-    free_ports: Arc<Mutex<BTreeSet<u16>>>,
+    free_ports: Arc<Mutex<VecDeque<u16>>>,
     new_conns: Sender<Conn>,
     outgoing_pkts: Sender<Msg>,
 }
@@ -209,8 +209,7 @@ impl DpdkIoKernelHandle {
             None => {
                 let port = {
                     *free_ports_g
-                        .iter()
-                        .next()
+                        .pop_front()
                         .ok_or_else(|| eyre!("No ports left"))?
                 };
                 free_ports_g.remove(&port);
@@ -563,9 +562,8 @@ impl DpdkIoKernel {
             // 3. third, check for new connections
             while let Ok(conn) = self.new_conns.try_recv() {
                 let local_port = conn.local_port();
-                if let Some(c) = self.conns.insert(local_port, conn) {
-                    warn!(?local_port, "Port double allocated");
-                    self.conns.insert(local_port, c);
+                if let Some(_) = self.conns.insert(local_port, conn) {
+                    debug!(?local_port, "New connection on port");
                 }
             }
         }
