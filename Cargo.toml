@@ -11,6 +11,7 @@ eui48 = "1"
 flume = "0.10"
 toml = "0.5"
 ahash = "0.7"
+rand = { version = "0.8", features = ["small_rng"] }
 
 [build-dependencies]
 bindgen = "0.59"

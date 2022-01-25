@@ -15,7 +15,7 @@ use color_eyre::{
 };
 use eui48::MacAddress;
 use flume::{Receiver, Sender};
-use std::collections::VecDeque;
+use std::collections::BTreeSet;
 use std::fs::read_to_string;
 use std::future::Future;
 use std::mem::zeroed;
@@ -99,7 +99,7 @@ impl DpdkConn {
 
 struct BoundPort {
     bound_port: u16,
-    free_ports: Arc<Mutex<VecDeque<u16>>>,
+    free_ports: Arc<Mutex<BTreeSet<u16>>>,
 }
 
 impl std::fmt::Debug for BoundPort {
@@ -111,7 +111,7 @@ impl std::fmt::Debug for BoundPort {
 impl Drop for BoundPort {
     fn drop(&mut self) {
         // put the port back
-        self.free_ports.lock().unwrap().push_back(self.bound_port);
+        self.free_ports.lock().unwrap().insert(self.bound_port);
     }
 }
 
@@ -183,7 +183,7 @@ impl BoundDpdkConn {
 /// Created by [`DpdkIoKernel::new`]. Tracks available ports for sockets to use.
 #[derive(Clone, Debug)]
 pub struct DpdkIoKernelHandle {
-    free_ports: Arc<Mutex<VecDeque<u16>>>,
+    free_ports: Arc<Mutex<BTreeSet<u16>>>,
     new_conns: Sender<Conn>,
     outgoing_pkts: Sender<Msg>,
 }
@@ -201,19 +201,26 @@ impl DpdkIoKernelHandle {
     pub fn socket(&self, bind: Option<u16>) -> Result<DpdkConn> {
         // assign a port.
         let mut free_ports_g = self.free_ports.lock().unwrap();
+        ensure!(!free_ports_g.is_empty(), "No ports left");
         let port = match bind {
             Some(p) => {
                 ensure!(free_ports_g.remove(&p), "Requested port not available");
                 p
             }
             None => {
-                let port = {
-                    *free_ports_g
-                        .pop_front()
-                        .ok_or_else(|| eyre!("No ports left"))?
-                };
-                free_ports_g.remove(&port);
-                port
+                use rand::{Rng, SeedableRng};
+                let mut rng = rand::rngs::SmallRng::from_entropy();
+                let mut max = 60000;
+                loop {
+                    let idx: u16 = rng.gen_range(0..max);
+                    let nxt = free_ports_g.range(idx..).next().copied();
+                    if let Some(port) = nxt {
+                        free_ports_g.remove(&port);
+                        break port;
+                    } else {
+                        max = idx;
+                    }
+                }
             }
         };
 
