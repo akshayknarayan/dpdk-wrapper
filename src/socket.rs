@@ -188,7 +188,7 @@ pub struct DpdkIoKernelHandle {
     outgoing_pkts: Sender<Msg>,
 }
 
-const CHANNEL_SIZE: usize = 128;
+const CHANNEL_SIZE: usize = 256;
 
 impl DpdkIoKernelHandle {
     fn new(new_conns: Sender<Conn>, outgoing_pkts: Sender<Msg>) -> Self {
@@ -296,7 +296,16 @@ impl Conn {
     fn got_packet(&mut self, msg: Msg) -> Result<()> {
         match self {
             Conn::Socket { ch, .. } => {
-                ch.send(msg)?;
+                match ch.try_send(msg) {
+                    Err(flume::TrySendError::Disconnected(_)) => {
+                        bail!("Disconnected");
+                    }
+                    Err(flume::TrySendError::Full(_msg)) => {
+                        trace!("incoming channel is full");
+                        // drop the packet
+                    }
+                    Ok(_) => (),
+                }
             }
             Conn::Accept {
                 local_port,
@@ -318,23 +327,30 @@ impl Conn {
                 });
                 new_conn_res.wrap_err("Could not send to new connections receiver")?;
 
-                if let Err(send_err) = msg_sender.send(msg) {
-                    remotes.remove(&from_addr).unwrap();
-                    debug!(
-                        ?local_port,
-                        ?from_addr,
-                        "Incoming channel dropped, resetting port"
-                    );
-                    let (cn_s, cn_r) = flume::bounded(CHANNEL_SIZE);
-                    ch.send(BoundDpdkConn {
-                        local_port: Arc::clone(local_port),
-                        remote_addr: from_addr,
-                        outgoing_pkts: outgoing_pkts.clone(),
-                        incoming_pkts: cn_r,
-                    })
-                    .unwrap();
-                    cn_s.send(send_err.into_inner()).unwrap(); // cannot fail since we just made cn_r
-                    remotes.insert(from_addr, cn_s);
+                match msg_sender.try_send(msg) {
+                    Err(flume::TrySendError::Disconnected(msg)) => {
+                        remotes.remove(&from_addr).unwrap();
+                        debug!(
+                            ?local_port,
+                            ?from_addr,
+                            "Incoming channel dropped, resetting port"
+                        );
+                        let (cn_s, cn_r) = flume::bounded(CHANNEL_SIZE);
+                        ch.send(BoundDpdkConn {
+                            local_port: Arc::clone(local_port),
+                            remote_addr: from_addr,
+                            outgoing_pkts: outgoing_pkts.clone(),
+                            incoming_pkts: cn_r,
+                        })
+                        .unwrap();
+                        cn_s.send(msg).unwrap(); // cannot fail since we just made cn_r
+                        remotes.insert(from_addr, cn_s);
+                    }
+                    Err(flume::TrySendError::Full(_msg)) => {
+                        trace!("incoming channel is full");
+                        // I guess we drop this packet
+                    }
+                    Ok(_) => (),
                 }
             }
         }
@@ -466,6 +482,7 @@ impl DpdkIoKernel {
                     .entry(pkt_src_ip)
                     .or_insert_with(|| MacAddress::from_bytes(&src_ether.addr_bytes).unwrap());
 
+                let mut remove = false;
                 match self.conns.get_mut(&dst_port) {
                     Some(ch) => {
                         let pkt_src_addr = SocketAddrV4::new(pkt_src_ip, src_port);
@@ -477,11 +494,17 @@ impl DpdkIoKernel {
                             buf: payload.to_vec(),
                         };
 
-                        ch.got_packet(msg).unwrap();
+                        if let Err(_) = ch.got_packet(msg) {
+                            remove = true;
+                        }
                     }
                     None => {
                         trace!(?dst_port, "Got packet for unassigned port, dropping");
                     }
+                }
+
+                if remove {
+                    self.conns.remove(&dst_port);
                 }
 
                 unsafe {

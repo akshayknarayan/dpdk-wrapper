@@ -95,11 +95,11 @@ bool parse_packet_(
 
     uint16_t eth_type = ntohs(eth_hdr->ether_type);
     if (!rte_is_same_ether_addr(our_eth, &eth_hdr->d_addr) && !rte_is_same_ether_addr(&ether_broadcast, &eth_hdr->d_addr)) {
-        printf("Bad MAC: %02" PRIx8 " %02" PRIx8 " %02" PRIx8
-			   " %02" PRIx8 " %02" PRIx8 " %02" PRIx8 "\n",
-            eth_hdr->d_addr.addr_bytes[0], eth_hdr->d_addr.addr_bytes[1],
-			eth_hdr->d_addr.addr_bytes[2], eth_hdr->d_addr.addr_bytes[3],
-			eth_hdr->d_addr.addr_bytes[4], eth_hdr->d_addr.addr_bytes[5]);
+    //    printf("Bad MAC: %02" PRIx8 " %02" PRIx8 " %02" PRIx8
+	//		   " %02" PRIx8 " %02" PRIx8 " %02" PRIx8 "\n",
+    //        eth_hdr->d_addr.addr_bytes[0], eth_hdr->d_addr.addr_bytes[1],
+	//		eth_hdr->d_addr.addr_bytes[2], eth_hdr->d_addr.addr_bytes[3],
+	//		eth_hdr->d_addr.addr_bytes[4], eth_hdr->d_addr.addr_bytes[5]);
         return false;
     }
     if (RTE_ETHER_TYPE_IPV4 != eth_type) {
@@ -114,7 +114,7 @@ bool parse_packet_(
     }
 
     if (IPPROTO_UDP != ip_hdr->next_proto_id) {
-        printf("Bad next proto_id\n");
+        //printf("Bad next proto_id\n");
         return false;
     }
 
