@@ -348,7 +348,7 @@ pub unsafe fn alloc_mbuf(mempool: *mut rte_mempool) -> Result<*mut rte_mbuf> {
 /// * data_len - The payload size, as these headers depend on knowing the size of the upcoming
 /// payloads.
 #[inline]
-pub(crate) unsafe fn fill_in_header(
+pub unsafe fn fill_in_header(
     pkt: *mut rte_mbuf,
     header_info: &utils::HeaderInfo,
     data_len: usize,

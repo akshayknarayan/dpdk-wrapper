@@ -2,6 +2,7 @@
 //!
 //! This is useful for a minimal UDP sender/receiver.
 
+#[macro_export]
 macro_rules! mbuf_slice(
     ($mbuf: expr, $offset: expr, $len: expr) => {
         std::slice::from_raw_parts_mut(
@@ -23,10 +24,10 @@ macro_rules! static_assert(
 );
 
 // raw bindings
-mod bindings;
-mod utils;
+pub mod bindings;
+pub mod utils;
 // still-unsafe slightly higher-level interface than the one in `bindings`.
 mod socket;
-mod wrapper;
+pub mod wrapper;
 
 pub use socket::{BoundDpdkConn, DpdkConn, DpdkIoKernel, DpdkIoKernelHandle, Msg};

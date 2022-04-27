@@ -1,8 +1,14 @@
+use ahash::AHashMap as HashMap;
 use byteorder::{ByteOrder, NetworkEndian};
-use color_eyre::eyre::{bail, Result};
+use color_eyre::{
+    eyre::{bail, eyre, WrapErr},
+    Result,
+};
 use eui48::MacAddress;
 use std::convert::{TryFrom, TryInto};
+use std::fs::read_to_string;
 use std::net::Ipv4Addr;
+use toml::Value;
 
 // Header setting taken from Demikernel's catnip OS:
 // https://github.com/demikernel/demikernel/blob/master/src/rust/catnip/src/protocols/
@@ -122,4 +128,90 @@ pub fn write_eth_hdr(header_info: &HeaderInfo, buf: &mut [u8]) -> Result<()> {
     buf[6..12].copy_from_slice(header_info.src_info.ether_addr.as_bytes());
     NetworkEndian::write_u16(&mut buf[12..14], EtherType2::Ipv4 as u16);
     Ok(())
+}
+
+pub fn parse_cfg(
+    config_path: &std::path::Path,
+) -> Result<(Vec<String>, Ipv4Addr, HashMap<Ipv4Addr, MacAddress>)> {
+    let file_str = read_to_string(config_path)?;
+    let mut cfg: Value = file_str.parse().wrap_err("parse TOML config")?;
+
+    fn dpdk_cfg(mut dpdk_cfg: toml::Value) -> Result<Vec<String>> {
+        let tab = dpdk_cfg
+            .as_table_mut()
+            .ok_or_else(|| eyre!("Dpdk config key not a table"))?;
+        let arr = tab
+            .remove("eal_init")
+            .ok_or_else(|| eyre!("No eal_init entry in dpdk config"))?;
+        match arr {
+            Value::Array(dpdk_cfg) => {
+                let r: Result<_> = dpdk_cfg
+                    .into_iter()
+                    .map(|s| match s {
+                        Value::String(s) => Ok(s),
+                        _ => Err(eyre!("eal_init value not a string array")),
+                    })
+                    .collect();
+                Ok(r?)
+            }
+            _ => bail!("eal_init value not a string array"),
+        }
+    }
+
+    fn net_cfg(mut net_cfg: toml::Value) -> Result<(Ipv4Addr, HashMap<Ipv4Addr, MacAddress>)> {
+        let tab = net_cfg
+            .as_table_mut()
+            .ok_or_else(|| eyre!("Net config not a table"))?;
+        let my_ip = tab
+            .remove("ip")
+            .ok_or_else(|| eyre!("No ip in net"))?
+            .as_str()
+            .ok_or_else(|| eyre!("ip value should be a string"))?
+            .parse()?;
+
+        let arp = tab
+            .remove("arp")
+            .ok_or_else(|| eyre!("No arp table in net"))?;
+        let arp_table: Result<HashMap<_, _>, _> = match arp {
+            Value::Array(arp_table) => arp_table
+                .into_iter()
+                .map(|v| match v {
+                    Value::Table(arp_entry) => {
+                        let ip: Ipv4Addr = arp_entry
+                            .get("ip")
+                            .ok_or_else(|| eyre!("no ip in arp entry"))?
+                            .as_str()
+                            .ok_or_else(|| eyre!("value not a string"))?
+                            .parse()?;
+                        let mac: MacAddress = arp_entry
+                            .get("mac")
+                            .ok_or_else(|| eyre!("no mac in arp entry"))?
+                            .as_str()
+                            .ok_or_else(|| eyre!("value not a string"))?
+                            .parse()?;
+                        Ok((ip, mac))
+                    }
+                    _ => bail!("arp table values should be dicts"),
+                })
+                .collect(),
+            _ => bail!("arp table should be an array"),
+        };
+
+        Ok((my_ip, arp_table?))
+    }
+
+    cfg.as_table_mut()
+        .ok_or_else(|| eyre!("Malformed TOML, want table structure with dpdk and net sections"))
+        .and_then(|tab| {
+            let dpdk_cfg = dpdk_cfg(
+                tab.remove("dpdk")
+                    .ok_or_else(|| eyre!("No entry dpdk in cfg"))?,
+            )?;
+            let (ip, arp) = net_cfg(
+                tab.remove("net")
+                    .ok_or_else(|| eyre!("No entry net in cfg"))?,
+            )?;
+
+            Ok((dpdk_cfg, ip, arp))
+        })
 }
