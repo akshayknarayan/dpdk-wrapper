@@ -316,6 +316,12 @@ pub fn dpdk_init(eal_args: Vec<String>, num_cores: usize) -> Result<(Vec<*mut rt
     dpdk_init_helper(num_cores)
 }
 
+pub fn affinitize_thread(core: usize) -> Result<()> {
+    let err = unsafe { affinitize(core as _) };
+    ensure!(err >= 0, "rte_thread_set_affinity failed");
+    Ok(())
+}
+
 /// Returns the result of a mutable ptr to an rte_mbuf allocated from a particular mempool.
 ///
 /// Arguments:

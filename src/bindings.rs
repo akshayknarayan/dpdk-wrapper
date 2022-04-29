@@ -43,6 +43,7 @@ extern "C" {
         payload_len: *mut usize,
     ) -> bool;
     pub fn eth_dev_configure_(port_id: u16, rx_rings: u16, tx_rings: u16);
+    pub fn affinitize_(core: u32) -> i32;
 }
 
 #[inline]
@@ -128,4 +129,9 @@ pub unsafe fn parse_packet(
 #[inline]
 pub unsafe fn eth_dev_configure(port_id: u16, rx_rings: u16, tx_rings: u16) {
     eth_dev_configure_(port_id, rx_rings, tx_rings);
+}
+
+#[inline]
+pub unsafe fn affinitize(core: u32) -> i32 {
+    affinitize_(core)
 }

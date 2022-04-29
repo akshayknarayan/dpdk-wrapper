@@ -1,7 +1,18 @@
+#define _GNU_SOURCE
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <stdint.h>
+#include <mem.h>
 #include <ctype.h>
 #include <inttypes.h>
+#include <sys/stat.h>
+#include <sys/mman.h>
+#include <fcntl.h>
+#include <unistd.h>
 #include <rte_cycles.h>
 #include <rte_dev.h>
+#include <rte_eal.h>
 #include <rte_errno.h>
 #include <rte_ethdev.h>
 #include <rte_ether.h>
@@ -10,17 +21,8 @@
 #include <rte_mbuf.h>
 #include <rte_memcpy.h>
 #include <rte_udp.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <stdint.h>
-#include <mem.h>
-#include <sys/stat.h>
-#include <fcntl.h>
-#include <unistd.h>
-#include <sys/mman.h>
 #include <rte_mempool.h>
 #include <rte_flow.h>
-#include <custom_mempool.h>
 #include <rte_thash.h>
 #define ARRAY_SIZE(arr) (sizeof(arr) / sizeof((arr)[0]))
 
@@ -136,12 +138,12 @@ static uint8_t sym_rss_key[] = {
 };
 
 void eth_dev_configure_(uint16_t port_id, uint16_t rx_rings, uint16_t tx_rings) {
-    uint16_t mtu;
+    //uint16_t mtu;
     struct rte_eth_dev_info dev_info = {};
     rte_eth_dev_info_get(port_id, &dev_info);
     rte_eth_dev_set_mtu(port_id, RX_PACKET_LEN);
-    rte_eth_dev_get_mtu(port_id, &mtu);
-    fprintf(stderr, "Dev info MTU:%u\n", mtu);
+    //rte_eth_dev_get_mtu(port_id, &mtu);
+    //fprintf(stderr, "Dev info MTU:%u\n", mtu);
     struct rte_eth_conf port_conf = {};
     port_conf.rxmode.max_rx_pkt_len = RX_PACKET_LEN;
 
@@ -164,4 +166,16 @@ uint64_t rte_get_timer_cycles_() {
 
 uint64_t rte_get_timer_hz_() {
     return rte_get_timer_hz();
+}
+
+int affinitize_(uint32_t core) {
+    int ok;
+    rte_cpuset_t cpuset;
+
+    CPU_ZERO(&cpuset);
+    CPU_SET(core, &cpuset);
+    ok = rte_thread_set_affinity(&cpuset);
+
+    RTE_PER_LCORE(_lcore_id) = core;
+    return ok;
 }
