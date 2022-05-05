@@ -154,7 +154,7 @@ fn wait_for_link_status_up(port_id: u16) -> Result<()> {
 unsafe fn initialize_dpdk_port(
     port_id: u16,
     num_queues: u16,
-    rx_mbuf_pools: &Vec<*mut rte_mempool>,
+    rx_mbuf_pools: &[*mut rte_mempool],
 ) -> Result<()> {
     ensure!(
         num_queues as usize == rx_mbuf_pools.len(),
@@ -167,19 +167,36 @@ unsafe fn initialize_dpdk_port(
     assert_eq!(rte_eth_dev_is_valid_port(port_id), 1);
     let rx_rings: u16 = num_queues;
     let tx_rings: u16 = num_queues;
-    let nb_rxd = RX_RING_SIZE;
-    let nb_txd = TX_RING_SIZE;
 
-    let mut rx_conf: MaybeUninit<rte_eth_rxconf> = MaybeUninit::zeroed();
-    (*rx_conf.as_mut_ptr()).rx_thresh.pthresh = RX_PTHRESH;
-    (*rx_conf.as_mut_ptr()).rx_thresh.hthresh = RX_HTHRESH;
-    (*rx_conf.as_mut_ptr()).rx_thresh.wthresh = RX_WTHRESH;
-    (*rx_conf.as_mut_ptr()).rx_free_thresh = 32;
+    let rx_conf = rte_eth_rxconf {
+        rx_thresh: rte_eth_thresh {
+            pthresh: RX_PTHRESH,
+            hthresh: RX_HTHRESH,
+            wthresh: RX_WTHRESH,
+        },
+        rx_free_thresh: 32,
+        rx_drop_en: 0,
+        rx_deferred_start: 0,
+        rx_nseg: 0,
+        offloads: 0,
+        rx_seg: std::ptr::null_mut(),
+        reserved_64s: [0, 0],
+        reserved_ptrs: [std::ptr::null_mut(), std::ptr::null_mut()],
+    };
 
-    let mut tx_conf: MaybeUninit<rte_eth_txconf> = MaybeUninit::zeroed();
-    (*tx_conf.as_mut_ptr()).tx_thresh.pthresh = TX_PTHRESH;
-    (*tx_conf.as_mut_ptr()).tx_thresh.hthresh = TX_HTHRESH;
-    (*tx_conf.as_mut_ptr()).tx_thresh.wthresh = TX_WTHRESH;
+    let tx_conf = rte_eth_txconf {
+        tx_thresh: rte_eth_thresh {
+            pthresh: TX_PTHRESH,
+            hthresh: TX_HTHRESH,
+            wthresh: TX_WTHRESH,
+        },
+        tx_rs_thresh: 0,
+        tx_free_thresh: 0,
+        tx_deferred_start: 0,
+        offloads: 0,
+        reserved_64s: [0, 0],
+        reserved_ptrs: [std::ptr::null_mut(), std::ptr::null_mut()],
+    };
 
     eth_dev_configure(port_id, rx_rings, tx_rings);
 
@@ -189,41 +206,40 @@ unsafe fn initialize_dpdk_port(
 
     // allocate and set up 1 RX queue per Ethernet port
     for i in 0..rx_rings {
-        trace!(?i, "Initializing rx ring");
+        debug!(?i, "Initializing rx ring");
         dpdk_ok!(rte_eth_rx_queue_setup(
             port_id,
             i,
-            nb_rxd,
+            RX_RING_SIZE,
             socket_id,
-            rx_conf.as_mut_ptr(),
+            &rx_conf as _,
             rx_mbuf_pools[i as usize]
         ));
     }
 
     for i in 0..tx_rings {
-        trace!(?i, "Initializing tx ring");
+        debug!(?i, "Initializing tx ring");
         dpdk_ok!(rte_eth_tx_queue_setup(
             port_id,
             i,
-            nb_txd,
+            TX_RING_SIZE,
             socket_id,
-            tx_conf.as_mut_ptr()
+            &tx_conf as _
         ));
     }
 
     // start the ethernet port
-    trace!(?port_id, "starting port");
+    debug!(?port_id, "starting port");
     dpdk_ok!(rte_eth_dev_start(port_id));
 
     // disable rx/tx flow control
-    // TODO: why?
-    trace!(?port_id, "port started, doing flow control");
+    debug!(?port_id, "port started, doing flow control");
     let mut fc_conf: MaybeUninit<rte_eth_fc_conf> = MaybeUninit::zeroed();
     dpdk_ok!(rte_eth_dev_flow_ctrl_get(port_id, fc_conf.as_mut_ptr()));
     (*fc_conf.as_mut_ptr()).mode = rte_eth_fc_mode_RTE_FC_NONE;
     dpdk_ok!(rte_eth_dev_flow_ctrl_set(port_id, fc_conf.as_mut_ptr()));
 
-    trace!(?port_id, "waiting for link up");
+    debug!(?port_id, "waiting for link up");
     wait_for_link_status_up(port_id)?;
     Ok(())
 }
@@ -244,7 +260,7 @@ pub fn create_mempool(
             (num_values as u16 * nb_ports) as u32,
             MBUF_CACHE_SIZE as u32,
             MBUF_PRIV_SIZE as u16,
-            data_size as u16, // TODO: add headroom?
+            data_size as u16,
             rte_socket_id() as i32,
         );
 
@@ -311,6 +327,9 @@ fn dpdk_init_helper(num_cores: usize) -> Result<(Vec<*mut rte_mempool>, u16)> {
 /// * eal_args: - DPDK eal initialization args.
 pub fn dpdk_init(eal_args: Vec<String>, num_cores: usize) -> Result<(Vec<*mut rte_mempool>, u16)> {
     dpdk_eal_init(eal_args).wrap_err("EAL initialization failed.")?;
+
+    let num_lcores = unsafe { rte_lcore_count() };
+    debug!(?num_lcores, "lcore info");
 
     // init ports, mempools on the rx side
     dpdk_init_helper(num_cores)
