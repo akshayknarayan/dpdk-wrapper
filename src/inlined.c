@@ -172,6 +172,11 @@ int affinitize_(uint32_t core) {
     int ok;
     rte_cpuset_t cpuset;
 
+    ok = rte_thread_register();
+    if (ok < 0) {
+        return ok;
+    }
+
     CPU_ZERO(&cpuset);
     CPU_SET(core, &cpuset);
     ok = rte_thread_set_affinity(&cpuset);
