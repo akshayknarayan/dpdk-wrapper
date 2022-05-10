@@ -197,6 +197,7 @@ int get_lcore_map_(uint32_t *lcores, uint32_t lcore_arr_size) {
     }
 
     int this_lcore = rte_lcore_id();
+    lcores[idx++] = this_lcore;
     int curr_lcore = rte_get_next_lcore(this_lcore, false, true);
     while (curr_lcore != this_lcore) {
         if (idx >= lcore_arr_size) {
@@ -204,7 +205,7 @@ int get_lcore_map_(uint32_t *lcores, uint32_t lcore_arr_size) {
         }
 
         lcores[idx++] = curr_lcore;
-        curr_lcore = rte_get_next_lcore(this_lcore, false, true);
+        curr_lcore = rte_get_next_lcore(curr_lcore, false, true);
     }
 
     return 0;
