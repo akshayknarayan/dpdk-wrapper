@@ -184,3 +184,28 @@ int affinitize_(uint32_t core) {
     RTE_PER_LCORE(_lcore_id) = core;
     return ok;
 }
+
+uint32_t lcore_count_() {
+    return rte_lcore_count();
+}
+
+int get_lcore_map_(uint32_t *lcores, uint32_t lcore_arr_size) {
+    uint32_t idx = 0;
+    uint32_t num_lcores = rte_lcore_count();
+    if (num_lcores > lcore_arr_size) {
+        return -1;
+    }
+
+    int this_lcore = rte_lcore_id();
+    int curr_lcore = rte_get_next_lcore(this_lcore, false, true);
+    while (curr_lcore != this_lcore) {
+        if (idx >= lcore_arr_size) {
+            return -1;
+        }
+
+        lcores[idx++] = curr_lcore;
+        curr_lcore = rte_get_next_lcore(this_lcore, false, true);
+    }
+
+    return 0;
+}

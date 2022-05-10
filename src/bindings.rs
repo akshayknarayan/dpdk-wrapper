@@ -44,6 +44,8 @@ extern "C" {
     ) -> bool;
     pub fn eth_dev_configure_(port_id: u16, rx_rings: u16, tx_rings: u16);
     pub fn affinitize_(core: u32) -> i32;
+    pub fn lcore_count_() -> u32;
+    pub fn get_lcore_map_(lcores: *mut u32, lcore_arr_size: u32);
 }
 
 #[inline]
@@ -134,4 +136,12 @@ pub unsafe fn eth_dev_configure(port_id: u16, rx_rings: u16, tx_rings: u16) {
 #[inline]
 pub unsafe fn affinitize(core: u32) -> i32 {
     affinitize_(core)
+}
+
+#[inline]
+pub fn get_lcore_map() -> Vec<u32> {
+    let num_lcores = unsafe { lcore_count_() };
+    let mut lcore_map = vec![0u32; num_lcores as _];
+    unsafe { get_lcore_map_(lcore_map.as_mut_ptr(), num_lcores) };
+    return lcore_map;
 }
