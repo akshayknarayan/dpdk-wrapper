@@ -435,8 +435,12 @@ pub unsafe fn tx_burst(
 ) -> Result<()> {
     let mut num_sent: u16 = 0;
     while num_sent < nb_pkts {
-        // TODO: should this be in a tight loop?
-        num_sent = rte_eth_tx_burst(port_id, queue_id, tx_pkts, nb_pkts);
+        num_sent += rte_eth_tx_burst(
+            port_id,
+            queue_id,
+            tx_pkts.offset(num_sent as isize),
+            nb_pkts - num_sent,
+        );
     }
 
     trace!(?num_sent, "tx_burst");
