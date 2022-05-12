@@ -101,6 +101,7 @@ fn main() {
     compiler.opt_level(3);
     compiler.pic(true);
     compiler.flag("-march=native");
+    compiler.flag("-gdwarf-2");
     compiler.flag("-Wno-unused-parameter");
     compiler.flag("-Wno-deprecated-declarations");
     let inlined_file = Path::new(&cargo_dir).join("src").join("inlined.c");
