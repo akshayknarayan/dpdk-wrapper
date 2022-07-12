@@ -16,9 +16,8 @@ use color_eyre::{
 use eui48::MacAddress;
 use flume::{Receiver, Sender};
 use std::collections::BTreeSet;
-use std::future::Future;
 use std::mem::zeroed;
-use std::net::{Ipv4Addr, SocketAddrV4};
+use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
 use std::sync::{Arc, Mutex};
 use tracing::{debug, trace, warn};
 
@@ -46,52 +45,75 @@ pub struct DpdkConn {
 
 impl DpdkConn {
     /// Send a packet.
-    pub fn send(&self, to: SocketAddrV4, msg: Vec<u8>) -> Result<()> {
+    pub fn send(&self, to: SocketAddr, msg: Vec<u8>) -> Result<()> {
+        let addr = match to {
+            SocketAddr::V4(addr) => addr,
+            SocketAddr::V6(a) => bail!("Only IPv4 is supported: {:?}", a),
+        };
+
         self.outgoing_pkts.send(Msg {
             port: self.local_port.bound_port,
-            addr: to,
+            addr,
             buf: msg,
         })?;
         Ok(())
     }
 
-    pub fn send_async(
-        &self,
-        to: SocketAddrV4,
-        msg: Vec<u8>,
-    ) -> impl Future<Output = Result<()>> + Send + 'static {
-        let ch = self.outgoing_pkts.clone();
-        let port = self.local_port.bound_port;
-        async move {
-            ch.send_async(Msg {
-                port,
-                addr: to,
+    pub async fn send_async(&self, to: SocketAddr, msg: Vec<u8>) -> Result<()> {
+        let addr = match to {
+            SocketAddr::V4(addr) => addr,
+            SocketAddr::V6(a) => bail!("Only IPv4 is supported: {:?}", a),
+        };
+
+        self.outgoing_pkts
+            .send_async(Msg {
+                port: self.local_port.bound_port,
+                addr,
                 buf: msg,
             })
             .await?;
-            Ok(())
-        }
+        Ok(())
     }
 
     /// Receive a packet.
     ///
     /// Returns (from_addr, payload)
-    pub fn recv(&self) -> Result<(SocketAddrV4, Vec<u8>)> {
+    pub fn recv(&self) -> Result<(SocketAddr, Vec<u8>)> {
         let Msg { addr, buf, port } = self.incoming_pkts.recv()?;
         assert_eq!(port, self.local_port.bound_port, "Port mismatched");
-        Ok((addr, buf))
+        Ok((SocketAddr::V4(addr), buf))
     }
 
-    pub fn recv_async(
+    pub async fn recv_async(&self) -> Result<(SocketAddr, Vec<u8>)> {
+        let Msg { addr, buf, port } = self.incoming_pkts.recv_async().await?;
+        assert_eq!(port, self.local_port.bound_port, "Port mismatched");
+        Ok((SocketAddr::V4(addr), buf))
+    }
+
+    pub async fn recv_async_batch<'buf>(
         &self,
-    ) -> impl Future<Output = Result<(SocketAddrV4, Vec<u8>)>> + Send + 'static {
-        let ch = self.incoming_pkts.clone();
-        let p = self.local_port.bound_port;
-        async move {
-            let Msg { addr, buf, port } = ch.recv_async().await?;
-            assert_eq!(port, p, "Port mismatched");
-            Ok((addr, buf))
+        msgs_buf: &'buf mut [Option<(SocketAddr, Vec<u8>)>],
+    ) -> Result<&'buf mut [Option<(SocketAddr, Vec<u8>)>]> {
+        if msgs_buf.is_empty() {
+            return Ok(msgs_buf);
         }
+
+        msgs_buf[0] = Some(self.recv_async().await.wrap_err("channel receive")?);
+        let mut slot_idx = 1;
+        while slot_idx < msgs_buf.len() {
+            match self.incoming_pkts.try_recv() {
+                Ok(Msg { addr, buf, port }) => {
+                    assert_eq!(port, self.local_port.bound_port, "Port mismatched");
+                    msgs_buf[slot_idx] = Some((SocketAddr::V4(addr), buf));
+                    slot_idx += 1;
+                }
+                Err(_) => {
+                    break;
+                }
+            }
+        }
+
+        Ok(&mut msgs_buf[..slot_idx])
     }
 }
 
@@ -135,44 +157,63 @@ impl BoundDpdkConn {
         Ok(())
     }
 
-    pub fn send_async(
-        &self,
-        to: SocketAddrV4,
-        msg: Vec<u8>,
-    ) -> impl Future<Output = Result<()>> + Send + 'static {
-        let ch = self.outgoing_pkts.clone();
-        let port = self.local_port.bound_port;
-        async move {
-            ch.send_async(Msg {
-                port,
-                addr: to,
+    pub async fn send_async(&self, msg: Vec<u8>) -> Result<()> {
+        self.outgoing_pkts
+            .send_async(Msg {
+                port: self.local_port.bound_port,
+                addr: self.remote_addr,
                 buf: msg,
             })
             .await?;
-            Ok(())
-        }
+        Ok(())
     }
 
     /// Receive a packet.
     ///
     /// Returns (from_addr, payload)
-    pub fn recv(&self) -> Result<(SocketAddrV4, Vec<u8>)> {
+    pub fn recv(&self) -> Result<(SocketAddr, Vec<u8>)> {
         let Msg { addr, buf, port } = self.incoming_pkts.recv()?;
         assert_eq!(port, self.local_port.bound_port, "Port mismatched");
         assert_eq!(addr, self.remote_addr, "Remote address mismatched");
-        Ok((addr, buf))
+        Ok((SocketAddr::V4(addr), buf))
     }
 
-    pub fn recv_async(
+    pub async fn recv_async(&self) -> Result<(SocketAddr, Vec<u8>)> {
+        let Msg { addr, buf, port } = self.incoming_pkts.recv_async().await?;
+        assert_eq!(port, self.local_port.bound_port, "Port mismatched");
+        assert_eq!(addr, self.remote_addr, "Remote address mismatched");
+        Ok((SocketAddr::V4(addr), buf))
+    }
+
+    pub async fn recv_async_batch<'buf>(
         &self,
-    ) -> impl Future<Output = Result<(SocketAddrV4, Vec<u8>)>> + Send + 'static {
-        let ch = self.incoming_pkts.clone();
-        let p = self.local_port.bound_port;
-        async move {
-            let Msg { addr, buf, port } = ch.recv_async().await?;
-            assert_eq!(port, p, "Port mismatched");
-            Ok((addr, buf))
+        msgs_buf: &'buf mut [Option<(SocketAddr, Vec<u8>)>],
+    ) -> Result<&'buf mut [Option<(SocketAddr, Vec<u8>)>]> {
+        if msgs_buf.is_empty() {
+            return Ok(msgs_buf);
         }
+
+        msgs_buf[0] = Some(
+            self.recv_async()
+                .await
+                .wrap_err("BoundDpdkConn first receive")?,
+        );
+        let mut slot_idx = 1;
+        while slot_idx < msgs_buf.len() {
+            match self.incoming_pkts.try_recv() {
+                Ok(Msg { addr, buf, port }) => {
+                    assert_eq!(port, self.local_port.bound_port, "Port mismatched");
+                    assert_eq!(addr, self.remote_addr, "Remote address mismatched");
+                    msgs_buf[slot_idx] = Some((SocketAddr::V4(addr), buf));
+                    slot_idx += 1;
+                }
+                Err(_) => {
+                    break;
+                }
+            }
+        }
+
+        Ok(&mut msgs_buf[..slot_idx])
     }
 }
 

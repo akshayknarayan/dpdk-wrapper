@@ -2,7 +2,7 @@
 
 use color_eyre::{eyre::WrapErr, Result};
 use dpdk_wrapper::{DpdkIoKernel, DpdkIoKernelHandle};
-use std::net::{Ipv4Addr, SocketAddrV4};
+use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 use structopt::StructOpt;
@@ -37,7 +37,8 @@ fn main() -> Result<()> {
         let handle = handle_r.recv().unwrap();
         match client {
             Some(ip) => {
-                let mut times = do_client(handle, SocketAddrV4::new(ip, port)).unwrap();
+                let mut times =
+                    do_client(handle, SocketAddr::V4(SocketAddrV4::new(ip, port))).unwrap();
                 let (p5, p25, p50, p75, p95) = percentiles_us(&mut times);
                 info!(?p5, ?p25, ?p50, ?p75, ?p95, "done");
                 println!(
@@ -68,7 +69,7 @@ fn do_iokernel(cfg: PathBuf, handle_s: flume::Sender<DpdkIoKernelHandle>) -> Res
 }
 
 #[tracing::instrument(err, skip(handle))]
-fn do_client(handle: DpdkIoKernelHandle, remote: SocketAddrV4) -> Result<Vec<Duration>> {
+fn do_client(handle: DpdkIoKernelHandle, remote: SocketAddr) -> Result<Vec<Duration>> {
     let conn = handle.socket(None)?;
     info!(?remote, "made client connection");
     let mut times = Vec::with_capacity(100);
