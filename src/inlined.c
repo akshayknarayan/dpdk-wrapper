@@ -189,6 +189,10 @@ uint32_t lcore_count_() {
     return rte_lcore_count();
 }
 
+uint32_t lcore_id_() {
+    return rte_lcore_id();
+}
+
 int get_lcore_map_(uint32_t *lcores, uint32_t lcore_arr_size) {
     uint32_t idx = 0;
     uint32_t num_lcores = rte_lcore_count();
