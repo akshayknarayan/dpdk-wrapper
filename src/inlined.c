@@ -153,6 +153,7 @@ void eth_dev_configure_(uint16_t port_id, uint16_t rx_rings, uint16_t tx_rings) 
     port_conf.rx_adv_conf.rss_conf.rss_key = sym_rss_key;
     port_conf.rx_adv_conf.rss_conf.rss_key_len = 40;
     port_conf.rx_adv_conf.rss_conf.rss_hf = ETH_RSS_UDP | ETH_RSS_IP;
+    //port_conf.rx_adv_conf.rss_conf.rss_hf = ETH_RSS_IPV4 | ETH_RSS_L4_DST_ONLY;
     port_conf.txmode.offloads = DEV_TX_OFFLOAD_MULTI_SEGS | DEV_TX_OFFLOAD_IPV4_CKSUM | DEV_TX_OFFLOAD_UDP_CKSUM;
     port_conf.txmode.mq_mode = ETH_MQ_TX_NONE;
 

@@ -162,12 +162,12 @@ pub fn parse_cfg(
         let tab = net_cfg
             .as_table_mut()
             .ok_or_else(|| eyre!("Net config not a table"))?;
-        let my_ip = tab
-            .remove("ip")
-            .ok_or_else(|| eyre!("No ip in net"))?
+        let my_ip = tab.remove("ip").ok_or_else(|| eyre!("No ip in net"))?;
+        let my_ip = my_ip
             .as_str()
-            .ok_or_else(|| eyre!("ip value should be a string"))?
-            .parse()?;
+            .ok_or_else(|| eyre!("ip value should be a string: {:?}", my_ip))?
+            .parse()
+            .wrap_err(eyre!("tried to parse {:?} as an IPv4 address", my_ip))?;
 
         let arp = tab
             .remove("arp")
