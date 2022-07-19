@@ -181,8 +181,10 @@ int affinitize_(uint32_t core) {
     CPU_ZERO(&cpuset);
     CPU_SET(core, &cpuset);
     ok = rte_thread_set_affinity(&cpuset);
+    if (ok >= 0) {
+        RTE_PER_LCORE(_lcore_id) = core;
+    }
 
-    RTE_PER_LCORE(_lcore_id) = core;
     return ok;
 }
 

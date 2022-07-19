@@ -46,7 +46,7 @@ extern "C" {
     pub fn affinitize_(core: u32) -> i32;
     pub fn lcore_count_() -> u32;
     pub fn lcore_id_() -> u32;
-    pub fn get_lcore_map_(lcores: *mut u32, lcore_arr_size: u32);
+    pub fn get_lcore_map_(lcores: *mut u32, lcore_arr_size: u32) -> i32;
 }
 
 #[inline]
@@ -139,12 +139,18 @@ pub unsafe fn affinitize(core: u32) -> i32 {
     affinitize_(core)
 }
 
+use color_eyre::eyre::{eyre, Report};
+
 #[inline]
-pub fn get_lcore_map() -> Vec<u32> {
+pub fn get_lcore_map() -> Result<Vec<u32>, Report> {
     let num_lcores = unsafe { lcore_count_() };
     let mut lcore_map = vec![0u32; num_lcores as _];
-    unsafe { get_lcore_map_(lcore_map.as_mut_ptr(), num_lcores) };
-    return lcore_map;
+    let ok = unsafe { get_lcore_map_(lcore_map.as_mut_ptr(), num_lcores) };
+    if ok < 0 {
+        Err(eyre!("Error getting lcore map: Incorrect lcore_count or could not get local lcore_id. Thread may not be registered with EAL."))
+    } else {
+        Ok(lcore_map)
+    }
 }
 
 #[inline]
