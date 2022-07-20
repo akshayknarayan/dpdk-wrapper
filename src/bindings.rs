@@ -43,6 +43,13 @@ extern "C" {
         payload_len: *mut usize,
     ) -> bool;
     pub fn eth_dev_configure_(port_id: u16, rx_rings: u16, tx_rings: u16);
+    pub fn compute_flow_affinity_(
+        local_ip: u32,
+        remote_ip: u32,
+        local_port: u16,
+        remote_port: u16,
+        num_queues: usize,
+    ) -> u32;
     pub fn affinitize_(core: u32) -> i32;
     pub fn lcore_count_() -> u32;
     pub fn lcore_id_() -> u32;
@@ -132,6 +139,24 @@ pub unsafe fn parse_packet(
 #[inline]
 pub unsafe fn eth_dev_configure(port_id: u16, rx_rings: u16, tx_rings: u16) {
     eth_dev_configure_(port_id, rx_rings, tx_rings);
+}
+
+use std::net::SocketAddrV4;
+
+#[inline]
+pub fn compute_flow_affinity(src_addr: SocketAddrV4, dst_addr: SocketAddrV4) -> u32 {
+    let num_queues = unsafe { lcore_count_() };
+    let src_ip = u32::from_be_bytes(src_addr.ip().octets());
+    let dst_ip = u32::from_be_bytes(dst_addr.ip().octets());
+    unsafe {
+        compute_flow_affinity_(
+            src_ip,
+            dst_ip,
+            src_addr.port(),
+            dst_addr.port(),
+            num_queues as _,
+        )
+    }
 }
 
 #[inline]

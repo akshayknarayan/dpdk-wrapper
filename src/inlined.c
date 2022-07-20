@@ -161,6 +161,34 @@ void eth_dev_configure_(uint16_t port_id, uint16_t rx_rings, uint16_t tx_rings) 
     rte_eth_dev_configure(port_id, rx_rings, tx_rings, &port_conf);
 }
 
+/**
+ * compute_flow_affinity - compute rss hash for incoming packets
+ * @local_port: the local port number
+ * @remote_port: the remote port
+ * @local_ip: local ip (in host-order)
+ * @remote_ip: remote ip (in host-order)
+ * @num_queues: total number of queues
+ *
+ * Returns the 32 bit hash mod maxks
+ */
+uint32_t compute_flow_affinity_(
+    uint32_t local_ip,
+    uint32_t remote_ip,
+    uint16_t local_port,
+    uint16_t remote_port,
+    uint32_t num_queues
+) {
+	const uint8_t *rss_key = (uint8_t *)sym_rss_key;
+
+	uint32_t input_tuple[] = {
+        remote_ip, local_ip, local_port | remote_port << 16
+	};
+
+    uint32_t ret = rte_softrss((uint32_t *)&input_tuple, ARRAY_SIZE(input_tuple),
+         (const uint8_t *)rss_key);
+	return ret % num_queues;
+}
+
 uint64_t rte_get_timer_cycles_() {
     return rte_get_timer_cycles();
 }
