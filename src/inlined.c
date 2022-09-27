@@ -189,6 +189,122 @@ uint32_t compute_flow_affinity_(
 	return ret % num_queues;
 }
 
+/* Masks to match any source but a specific destination port */
+static const struct rte_flow_item_udp udp_dst_port_mask = {
+	.hdr.dst_port = RTE_BE16(0xffff),
+};
+
+static const struct rte_flow_item_ipv4 ipv4_any_addr = {
+	.hdr = {
+		.src_addr = 0,
+		.dst_addr = 0,
+	}
+};
+
+static const struct rte_flow_item_eth eth_proto_mask = {
+	.type = RTE_BE16(0xffff),
+};
+
+static const struct rte_flow_item_eth eth_proto_ipv4 = {
+	.type = RTE_BE16(RTE_ETHER_TYPE_IPV4),
+};
+
+/** Use DPDK `rte_flow` API to configure steering for the flow.
+ * @dpdk_port_id: the DPDK port to act on.
+ * @dst_port: the local destination UDP port to match on.
+ * @dpdk_queue_id: the queue id to steer the flow's packets to.
+ * @flow_handle_out: a returned handle to the flow object which can be used to delete the steering rule.
+ *
+ * Returns 0 if no error.
+ */
+int setup_flow_steering_(
+    uint16_t dpdk_port_id,
+    uint16_t dst_port,
+    uint16_t dpdk_queue_id,
+    uint16_t rule_priority,
+	struct rte_flow **flow_handle_out
+) {
+	int ret;
+	struct rte_flow_error err;
+	struct rte_flow_attr attr = {
+		.group = 0,
+		.priority = rule_priority,
+		.ingress = 1,
+	};
+
+	struct rte_flow_item_udp udp_flow = {
+		.hdr.dst_port = RTE_BE16(dst_port),
+	};
+
+	struct rte_flow_item patterns[] = {
+		{
+			.type = RTE_FLOW_ITEM_TYPE_ETH,
+			.mask = &eth_proto_mask,
+			.spec = &eth_proto_ipv4,
+		},
+		{
+			.type = RTE_FLOW_ITEM_TYPE_IPV4,
+			.mask = &ipv4_any_addr,
+			.spec = &ipv4_any_addr,
+		},
+		{
+			.type = RTE_FLOW_ITEM_TYPE_UDP,
+			.spec = &udp_flow,
+			.last = NULL, /* not a range */
+			.mask = &udp_dst_port_mask,
+		},
+		{
+			.type = RTE_FLOW_ITEM_TYPE_END,
+		},
+	};
+
+	struct rte_flow_action_queue queue_action = {
+		.index = dpdk_queue_id,
+	};
+
+    struct rte_flow_action actions[] = {
+		{
+			.type = RTE_FLOW_ACTION_TYPE_QUEUE,
+			.conf = &queue_action,
+		},
+		{ .type = RTE_FLOW_ACTION_TYPE_END },
+	};
+
+	ret = rte_flow_validate(dpdk_port_id, &attr, patterns, actions, &err);
+	if (ret != 0) {
+        printf("flow validate failed: %s\nerror type %u %s",
+                rte_strerror(-ret), err.type, err.message);
+		return ret;
+	}
+
+    *flow_handle_out = rte_flow_create(dpdk_port_id, &attr, patterns, actions, &err);
+	if (flow_handle_out == NULL) {
+        printf("flow create failed: %s\nerror type %u %s",
+                rte_strerror(-rte_errno), err.type, err.message);
+        return -rte_errno;
+    }
+
+    return 0;
+}
+
+/* Remove struct rte_flow entry.
+ * @dpdk_port_id: the DPDK port to act on.
+ * @flow_handle_out: a handle to the flow object which we will delete.
+ *
+ * Returns 0 on success, negative rte_errno value otherwise.
+ */
+int clear_flow_steering_(
+   uint16_t dpdk_port_id,
+   struct rte_flow *handle
+) {
+    int ok = rte_flow_destroy(dpdk_port_id, handle, NULL);
+    if (ok >= 0) {
+        return ok;
+    } else {
+        return -rte_errno;
+    }
+}
+
 uint64_t rte_get_timer_cycles_() {
     return rte_get_timer_cycles();
 }

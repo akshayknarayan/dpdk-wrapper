@@ -50,6 +50,14 @@ extern "C" {
         remote_port: u16,
         num_queues: usize,
     ) -> u32;
+    pub fn setup_flow_steering_(
+        dpdk_port_id: u16,
+        dst_port: u16,
+        dpdk_queue_id: u16,
+        rule_priority: u16,
+        flow_handle_out: *mut *mut rte_flow,
+    ) -> i32;
+    pub fn clear_flow_steering_(dpdk_port_id: u16, flow_handle: *mut rte_flow) -> i32;
     pub fn affinitize_(core: u32) -> i32;
     pub fn lcore_count_() -> u32;
     pub fn lcore_id_() -> u32;
@@ -164,15 +172,13 @@ pub unsafe fn affinitize(core: u32) -> i32 {
     affinitize_(core)
 }
 
-use color_eyre::eyre::{eyre, Report};
-
 #[inline]
-pub fn get_lcore_map() -> Result<Vec<u32>, Report> {
+pub fn get_lcore_map() -> Result<Vec<u32>, color_eyre::eyre::Report> {
     let num_lcores = unsafe { lcore_count_() };
     let mut lcore_map = vec![0u32; num_lcores as _];
     let ok = unsafe { get_lcore_map_(lcore_map.as_mut_ptr(), num_lcores) };
     if ok < 0 {
-        Err(eyre!("Error getting lcore map: Incorrect lcore_count or could not get local lcore_id. Thread may not be registered with EAL."))
+        Err(color_eyre::eyre::eyre!("Error getting lcore map: Incorrect lcore_count or could not get local lcore_id. Thread may not be registered with EAL."))
     } else {
         Ok(lcore_map)
     }
