@@ -201,14 +201,6 @@ static const struct rte_flow_item_ipv4 ipv4_any_addr = {
 	}
 };
 
-static const struct rte_flow_item_eth eth_proto_mask = {
-	.type = RTE_BE16(0xffff),
-};
-
-static const struct rte_flow_item_eth eth_proto_ipv4 = {
-	.type = RTE_BE16(RTE_ETHER_TYPE_IPV4),
-};
-
 /** Use DPDK `rte_flow` API to configure steering for the flow.
  * @dpdk_port_id: the DPDK port to act on.
  * @dst_port: the local destination UDP port to match on.
@@ -221,14 +213,13 @@ int setup_flow_steering_(
     uint16_t dpdk_port_id,
     uint16_t dst_port,
     uint16_t dpdk_queue_id,
-    uint16_t rule_priority,
 	struct rte_flow **flow_handle_out
 ) {
 	int ret;
 	struct rte_flow_error err;
 	struct rte_flow_attr attr = {
 		.group = 0,
-		.priority = rule_priority,
+		.priority = 0,
 		.ingress = 1,
 	};
 
@@ -239,8 +230,6 @@ int setup_flow_steering_(
 	struct rte_flow_item patterns[] = {
 		{
 			.type = RTE_FLOW_ITEM_TYPE_ETH,
-			.mask = &eth_proto_mask,
-			.spec = &eth_proto_ipv4,
 		},
 		{
 			.type = RTE_FLOW_ITEM_TYPE_IPV4,
@@ -249,9 +238,9 @@ int setup_flow_steering_(
 		},
 		{
 			.type = RTE_FLOW_ITEM_TYPE_UDP,
+			.mask = &udp_dst_port_mask,
 			.spec = &udp_flow,
 			.last = NULL, /* not a range */
-			.mask = &udp_dst_port_mask,
 		},
 		{
 			.type = RTE_FLOW_ITEM_TYPE_END,
@@ -267,19 +256,20 @@ int setup_flow_steering_(
 			.type = RTE_FLOW_ACTION_TYPE_QUEUE,
 			.conf = &queue_action,
 		},
+        //{ .type = RTE_FLOW_ACTION_TYPE_VOID },
 		{ .type = RTE_FLOW_ACTION_TYPE_END },
 	};
 
 	ret = rte_flow_validate(dpdk_port_id, &attr, patterns, actions, &err);
 	if (ret != 0) {
-        printf("flow validate failed: %s\nerror type %u %s",
+        printf("flow validate failed: %s: error type %u: %s\n",
                 rte_strerror(-ret), err.type, err.message);
 		return ret;
 	}
 
     *flow_handle_out = rte_flow_create(dpdk_port_id, &attr, patterns, actions, &err);
 	if (flow_handle_out == NULL) {
-        printf("flow create failed: %s\nerror type %u %s",
+        printf("flow create failed: %s: error type %u: %s\n",
                 rte_strerror(-rte_errno), err.type, err.message);
         return -rte_errno;
     }

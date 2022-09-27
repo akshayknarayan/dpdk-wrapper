@@ -477,14 +477,12 @@ pub unsafe fn setup_flow_steering(
     dpdk_port_id: u16,
     local_dst_port: u16,
     dst_queue_id: u16,
-    rule_priority: u16,
 ) -> Result<FlowSteeringHandle, Report> {
     let mut flow_handle = std::mem::MaybeUninit::uninit();
     let err = setup_flow_steering_(
         dpdk_port_id,
         local_dst_port,
         dst_queue_id,
-        rule_priority,
         flow_handle.as_mut_ptr(),
     );
     if err != 0 {

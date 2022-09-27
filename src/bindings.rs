@@ -54,7 +54,6 @@ extern "C" {
         dpdk_port_id: u16,
         dst_port: u16,
         dpdk_queue_id: u16,
-        rule_priority: u16,
         flow_handle_out: *mut *mut rte_flow,
     ) -> i32;
     pub fn clear_flow_steering_(dpdk_port_id: u16, flow_handle: *mut rte_flow) -> i32;
