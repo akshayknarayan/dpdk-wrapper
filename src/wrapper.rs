@@ -464,9 +464,13 @@ impl Drop for FlowSteeringHandle {
     fn drop(&mut self) {
         // deregister the rte_flow entry
         unsafe {
+            if self.handle.is_null() {
+                tracing::warn!("rte_flow pointer in FlowSteeringHandle is null");
+                return;
+            }
             let err = clear_flow_steering_(self.dpdk_port, self.handle);
             if err != 0 {
-                tracing::warn!("Error clearing rte_flow entry");
+                tracing::warn!(?err, "Error clearing rte_flow entry");
             }
         }
     }
@@ -492,13 +496,11 @@ pub unsafe fn setup_flow_steering(
         return Err(eyre!("Error creating rte_flow entry: {}", err_str));
     }
 
-    ensure!(
-        !flow_handle.as_ptr().is_null(),
-        "flow handle not initialized"
-    );
+    let flow_handle = flow_handle.assume_init();
+    ensure!(!flow_handle.is_null(), "flow handle not initialized");
 
     Ok(FlowSteeringHandle {
         dpdk_port: dpdk_port_id,
-        handle: flow_handle.assume_init(),
+        handle: flow_handle,
     })
 }

@@ -266,8 +266,14 @@ int setup_flow_steering_(
 		return ret;
 	}
 
+    if (flow_handle_out == NULL) {
+        printf("invalid out-pointer provided to setup_flow_steering\n");
+        return -EINVAL;
+    }
+
+    *flow_handle_out = NULL;
     *flow_handle_out = rte_flow_create(dpdk_port_id, &attr, patterns, actions, &err);
-	if (flow_handle_out == NULL) {
+	if (*flow_handle_out == NULL) {
         printf("flow create failed: %s: error type %u: %s\n",
                 rte_strerror(-rte_errno), err.type, err.message);
         return -rte_errno;
@@ -286,6 +292,10 @@ int clear_flow_steering_(
    uint16_t dpdk_port_id,
    struct rte_flow *handle
 ) {
+    if (handle == NULL) {
+        return -EINVAL;
+    }
+
     int ok = rte_flow_destroy(dpdk_port_id, handle, NULL);
     if (ok >= 0) {
         return ok;
