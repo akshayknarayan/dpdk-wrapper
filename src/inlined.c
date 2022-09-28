@@ -256,7 +256,6 @@ int setup_flow_steering_(
 			.type = RTE_FLOW_ACTION_TYPE_QUEUE,
 			.conf = &queue_action,
 		},
-        //{ .type = RTE_FLOW_ACTION_TYPE_VOID },
 		{ .type = RTE_FLOW_ACTION_TYPE_END },
 	};
 
