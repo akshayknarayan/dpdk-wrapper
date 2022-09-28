@@ -201,6 +201,13 @@ static const struct rte_flow_item_ipv4 ipv4_any_addr = {
 	}
 };
 
+
+static const struct rte_flow_item_eth eth_proto_mask = {
+    .dst.addr_bytes = "\xff\xff\xff\xff\xff\xff",
+    .src.addr_bytes = "\x00\x00\x00\x00\x00\x00",
+    .type = RTE_BE16(0x0000),
+};
+
 /** Use DPDK `rte_flow` API to configure steering for the flow.
  * @dpdk_port_id: the DPDK port to act on.
  * @dst_port: the local destination UDP port to match on.
@@ -223,6 +230,30 @@ int setup_flow_steering_(
 		.ingress = 1,
 	};
 
+    // We don't actually care about matching on the local eth address. But:
+    // (1) if we match on nothing, like so:
+    //         struct rte_flow_item_eth eth_proto_mask = {};
+    //     then we get complaints from mlx4 about not supporting additional matching (which we want for
+    //     the UDP dst port matching below) because the eth-level match is "indiscriminate".
+    // (2) if we match on IPv4, like so:
+    //         struct rte_flow_item_eth eth_proto_ipv4 = {};
+    //         eth_proto_ipv4.type = RTE_BE16(RTE_ETHER_TYPE_IPV4);
+    //         struct rte_flow_item_eth eth_proto_mask = {};
+    //         eth_proto_mask.type = 0xffff;
+    //     then we get complaints about "unsupported field found in "mask".
+    //
+    // Fortunately, it seems that the dst eth addr is a supported field, and since we apparently need
+    // to have some field, we use that.
+    struct rte_ether_addr local_eth_addr;
+    ret = rte_eth_macaddr_get(dpdk_port_id, &local_eth_addr);
+    if (ret != 0) {
+        return ret;
+    }
+
+    struct rte_flow_item_eth eth_proto_ipv4 = {};
+    eth_proto_ipv4.dst = local_eth_addr;
+    eth_proto_ipv4.type = RTE_BE16(RTE_ETHER_TYPE_IPV4);
+
 	struct rte_flow_item_udp udp_flow = {
 		.hdr.dst_port = RTE_BE16(dst_port),
 	};
@@ -230,6 +261,8 @@ int setup_flow_steering_(
 	struct rte_flow_item patterns[] = {
 		{
 			.type = RTE_FLOW_ITEM_TYPE_ETH,
+            .mask = &eth_proto_mask,
+            .spec = &eth_proto_ipv4,
 		},
 		{
 			.type = RTE_FLOW_ITEM_TYPE_IPV4,
