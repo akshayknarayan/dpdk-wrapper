@@ -208,22 +208,25 @@ static const struct rte_flow_item_eth eth_proto_mask = {
     .type = RTE_BE16(0x0000),
 };
 
-/** Use DPDK `rte_flow` API to configure steering for the flow.
- * @dpdk_port_id: the DPDK port to act on.
- * @dst_port: the local destination UDP port to match on.
- * @dpdk_queue_id: the queue id to steer the flow's packets to.
- * @flow_handle_out: a returned handle to the flow object which can be used to delete the steering rule.
+/* Helper function to construct UDP dst port matching rule.
+ * @dst_port: the destination UDP port to match on.
+ * @attr_out: where to put the initialized `rte_flow_attr`.
+ * @pattern_out: where to put the initialized `rte_flow_item[]` containing the pattern to match. 
+ *               this is a length-4 `rte_flow_item` array.
  *
- * Returns 0 if no error.
+ * Returns 0 on success and nonzero if arguments are malformed (-EINVAL) or `rte_eth_macaddr_get` fails.
  */
-int setup_flow_steering_(
-    uint16_t dpdk_port_id,
+static int config_udp_dst_port_match_rule(
     uint16_t dst_port,
-    uint16_t dpdk_queue_id,
-	struct rte_flow **flow_handle_out
+    uint16_t dpdk_port_id,
+    struct rte_flow_attr *attr_out,
+    struct rte_flow_item (*pattern_out)[4]
 ) {
-	int ret;
-	struct rte_flow_error err;
+    int ret;
+    if (attr_out == NULL || pattern_out == NULL) {
+        return -EINVAL;
+    }
+
 	struct rte_flow_attr attr = {
 		.group = 0,
 		.priority = 0,
@@ -280,19 +283,21 @@ int setup_flow_steering_(
 		},
 	};
 
-	struct rte_flow_action_queue queue_action = {
-		.index = dpdk_queue_id,
-	};
+    *attr_out = attr;
+    memcpy(pattern_out, &patterns, 4 * sizeof(struct rte_flow_item));
+    return 0;
+}
 
-    struct rte_flow_action actions[] = {
-		{
-			.type = RTE_FLOW_ACTION_TYPE_QUEUE,
-			.conf = &queue_action,
-		},
-		{ .type = RTE_FLOW_ACTION_TYPE_END },
-	};
-
-	ret = rte_flow_validate(dpdk_port_id, &attr, patterns, actions, &err);
+static int validate_and_install(
+    uint16_t dpdk_port_id,
+    struct rte_flow_attr *attr,
+    struct rte_flow_item *patterns,
+    struct rte_flow_action *actions,
+    struct rte_flow **flow_handle_out
+) {
+    int ret;
+	struct rte_flow_error err;
+	ret = rte_flow_validate(dpdk_port_id, attr, patterns, actions, &err);
 	if (ret != 0) {
         printf("flow validate failed: %s: error type %u: %s\n",
                 rte_strerror(-ret), err.type, err.message);
@@ -305,7 +310,7 @@ int setup_flow_steering_(
     }
 
     *flow_handle_out = NULL;
-    *flow_handle_out = rte_flow_create(dpdk_port_id, &attr, patterns, actions, &err);
+    *flow_handle_out = rte_flow_create(dpdk_port_id, attr, patterns, actions, &err);
 	if (*flow_handle_out == NULL) {
         printf("flow create failed: %s: error type %u: %s\n",
                 rte_strerror(-rte_errno), err.type, err.message);
@@ -313,6 +318,84 @@ int setup_flow_steering_(
     }
 
     return 0;
+}
+
+/** Use DPDK `rte_flow` API to configure steering for the flow to the given queue.
+ * @dpdk_port_id: the DPDK port to act on.
+ * @dst_port: the local destination UDP port to match on.
+ * @dpdk_queue_id: the queue id to steer the flow's packets to.
+ * @flow_handle_out: a returned handle to the flow object which can be used to delete the steering rule.
+ *
+ * Returns 0 if no error.
+ */
+int setup_flow_steering_solo_(
+    uint16_t dpdk_port_id,
+    uint16_t dst_port,
+    uint16_t dpdk_queue_id,
+	struct rte_flow **flow_handle_out
+) {
+	int ret;
+    struct rte_flow_attr attr = {};
+    struct rte_flow_item patterns[4] = {};
+
+    ret = config_udp_dst_port_match_rule(dst_port, dpdk_port_id, &attr, &patterns);
+    if (ret != 0) {
+        return ret;
+    }
+
+	struct rte_flow_action_queue queue_action = {
+		.index = dpdk_queue_id,
+	};
+
+    struct rte_flow_action actions[] = {
+		{
+			.type = RTE_FLOW_ACTION_TYPE_QUEUE,
+			.conf = &queue_action,
+		},
+		{ .type = RTE_FLOW_ACTION_TYPE_END },
+	};
+
+    return validate_and_install(dpdk_port_id, &attr, patterns, actions, flow_handle_out);
+}
+
+/** Use DPDK `rte_flow` API to configure RSS for the flow among the given queues.
+ * @dpdk_port_id: the DPDK port to act on.
+ * @dst_port: the local destination UDP port to match on.
+ * @dpdk_queue_ids: the queue ids to RSS the flow's packets among.
+ * @flow_handle_out: a returned handle to the flow object which can be used to delete the steering rule.
+ *
+ * Returns 0 if no error.
+ */
+int setup_flow_steering_rss_(
+    uint16_t dpdk_port_id,
+    uint16_t dst_port,
+    uint16_t num_queues,
+    const uint16_t *dpdk_queue_ids,
+	struct rte_flow **flow_handle_out
+) {
+	int ret;
+    struct rte_flow_attr attr = {};
+    struct rte_flow_item patterns[4] = {};
+
+    ret = config_udp_dst_port_match_rule(dst_port, dpdk_port_id, &attr, &patterns);
+    if (ret != 0) {
+        return ret;
+    }
+
+    struct rte_flow_action_rss rss_action = {
+        .queue_num = num_queues,
+        .queue = dpdk_queue_ids,
+    };
+
+    struct rte_flow_action actions[] = {
+        {
+            .type = RTE_FLOW_ACTION_TYPE_RSS,
+            .conf = &rss_action,
+        },
+        { .type = RTE_FLOW_ACTION_TYPE_END },
+    };
+
+    return validate_and_install(dpdk_port_id, &attr, patterns, actions, flow_handle_out);
 }
 
 /* Remove struct rte_flow entry.

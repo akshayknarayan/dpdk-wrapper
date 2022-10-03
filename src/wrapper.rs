@@ -477,16 +477,51 @@ impl Drop for FlowSteeringHandle {
 }
 
 #[inline]
-pub unsafe fn setup_flow_steering(
+pub unsafe fn setup_flow_steering_solo(
     dpdk_port_id: u16,
     local_dst_port: u16,
     dst_queue_id: u16,
 ) -> Result<FlowSteeringHandle, Report> {
     let mut flow_handle = std::mem::MaybeUninit::uninit();
-    let err = setup_flow_steering_(
+    let err = setup_flow_steering_solo_(
         dpdk_port_id,
         local_dst_port,
         dst_queue_id,
+        flow_handle.as_mut_ptr(),
+    );
+    if err != 0 {
+        let err_str = std::ffi::CStr::from_ptr(rte_strerror(err as _))
+            .to_str()
+            .unwrap_or_else(|_| "Unable to construct error string");
+        return Err(eyre!("Error creating rte_flow entry: {}", err_str));
+    }
+
+    let flow_handle = flow_handle.assume_init();
+    ensure!(!flow_handle.is_null(), "flow handle not initialized");
+
+    Ok(FlowSteeringHandle {
+        dpdk_port: dpdk_port_id,
+        handle: flow_handle,
+    })
+}
+
+#[inline]
+pub unsafe fn setup_flow_steering_rss(
+    dpdk_port_id: u16,
+    local_dst_port: u16,
+    dst_queue_ids: &[u16],
+) -> Result<FlowSteeringHandle, Report> {
+    ensure!(
+        dst_queue_ids.len() > 1,
+        "Need at least 2 dest-queues to RSS between"
+    );
+
+    let mut flow_handle = std::mem::MaybeUninit::uninit();
+    let err = setup_flow_steering_rss_(
+        dpdk_port_id,
+        local_dst_port,
+        dst_queue_ids.len() as _,
+        dst_queue_ids.as_ptr(),
         flow_handle.as_mut_ptr(),
     );
     if err != 0 {
