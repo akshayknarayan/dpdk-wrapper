@@ -465,12 +465,12 @@ impl Drop for FlowSteeringHandle {
         // deregister the rte_flow entry
         unsafe {
             if self.handle.is_null() {
-                tracing::warn!("rte_flow pointer in FlowSteeringHandle is null");
+                warn!("rte_flow pointer in FlowSteeringHandle is null");
                 return;
             }
             let err = clear_flow_steering_(self.dpdk_port, self.handle);
             if err != 0 {
-                tracing::warn!(?err, "Error clearing rte_flow entry");
+                warn!(?err, "Error clearing rte_flow entry");
             }
         }
     }
