@@ -420,6 +420,23 @@ int clear_flow_steering_(
     }
 }
 
+/* Remove *all* flow steering rules on the dpdk port.
+ * @dpdk_port_id: the DPDK port to act on.
+ *
+ * Returns 0 on success, negative rte_errno value otherwise.
+ */
+int flush_flow_steering_(uint16_t dpdk_port_id) {
+    struct rte_flow_error err;
+    int ret = rte_flow_flush(dpdk_port_id, &err);
+	if (ret != 0) {
+        printf("flow flush failed: %s: error type %u: %s\n",
+                rte_strerror(-ret), err.type, err.message);
+		return -rte_errno;
+	}
+
+    return 0;
+}
+
 uint64_t rte_get_timer_cycles_() {
     return rte_get_timer_cycles();
 }

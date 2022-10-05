@@ -539,3 +539,16 @@ pub unsafe fn setup_flow_steering_rss(
         handle: flow_handle,
     })
 }
+
+#[inline]
+pub unsafe fn flush_flow_steering(dpdk_port_id: u16) -> Result<(), Report> {
+    let err = flush_flow_steering_(dpdk_port_id);
+    if err != 0 {
+        let err_str = std::ffi::CStr::from_ptr(rte_strerror(err as _))
+            .to_str()
+            .unwrap_or_else(|_| "Unable to construct error string");
+        return Err(eyre!("Error flushing rte_flow rules: {}", err_str));
+    }
+
+    Ok(())
+}

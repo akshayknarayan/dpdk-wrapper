@@ -64,6 +64,7 @@ extern "C" {
         flow_handle_out: *mut *mut rte_flow,
     ) -> i32;
     pub fn clear_flow_steering_(dpdk_port_id: u16, flow_handle: *mut rte_flow) -> i32;
+    pub fn flush_flow_steering_(dpdk_port_id: u16) -> i32;
     pub fn affinitize_(core: u32) -> i32;
     pub fn lcore_count_() -> u32;
     pub fn lcore_id_() -> u32;
