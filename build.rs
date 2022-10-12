@@ -17,19 +17,19 @@ fn main() {
     );
     let header_path = Path::new(&cargo_dir).join("inc").join("dpdk-headers.h");
     println!("cargo:warning=Building DPDK...");
-    let dpdk_path = canonicalize(cargo_dir.clone().join("dpdk")).unwrap();
+    let dpdk_path = canonicalize(cargo_dir.join("dpdk")).unwrap();
     let dpdk_dir = dpdk_path.as_path();
     Command::new("./build-dpdk.sh")
-        .args(&[dpdk_dir.to_str().unwrap()])
+        .args([dpdk_dir.to_str().unwrap()])
         .status()
         .unwrap_or_else(|e| panic!("Failed to build DPDK: {:?}", e));
 
-    let dpdk_install = dpdk_dir.clone().join("install");
+    let dpdk_install = dpdk_dir.join("install");
     let pkg_config_path = dpdk_install.join("lib/x86_64-linux-gnu/pkgconfig");
 
     let cflags_bytes = Command::new("pkg-config")
         .env("PKG_CONFIG_PATH", &pkg_config_path)
-        .args(&["--cflags", "libdpdk"])
+        .args(["--cflags", "libdpdk"])
         .output()
         .unwrap_or_else(|e| panic!("Failed pkg-config cflags: {:?}", e))
         .stdout;
@@ -38,8 +38,8 @@ fn main() {
     let mut header_locations = vec![];
 
     for flag in cflags.split(' ') {
-        if flag.starts_with("-I") {
-            let header_location = &flag[2..];
+        if let Some(header_location) = flag.strip_prefix("-I") {
+            let header_location = header_location.trim_end_matches(char::is_whitespace);
             header_locations.push(header_location);
         }
     }
@@ -50,7 +50,7 @@ fn main() {
 
     let ldflags_bytes = Command::new("pkg-config")
         .env("PKG_CONFIG_PATH", &pkg_config_path)
-        .args(&["--libs", "libdpdk"])
+        .args(["--libs", "libdpdk"])
         .output()
         .unwrap_or_else(|e| panic!("Failed pkg-config ldflags: {:?}", e))
         .stdout;
@@ -60,17 +60,17 @@ fn main() {
     let mut lib_names = vec![];
 
     for flag in ldflags.split(' ') {
-        if flag.starts_with("-L") {
-            library_location = Some(&flag[2..]);
-        } else if flag.starts_with("-l") {
-            lib_names.push(&flag[2..]);
+        if let Some(ll) = flag.strip_prefix("-L") {
+            library_location = Some(ll);
+        } else if let Some(ln) = flag.strip_prefix("-l") {
+            lib_names.push(ln);
         }
     }
 
     // Step 2: Now that we've compiled and installed DPDK, point cargo to the libraries.
     println!(
         "cargo:rustc-link-search=native={}",
-        library_location.unwrap()
+        library_location.expect("Did not find -L flag")
     );
     for lib_name in &lib_names {
         println!("cargo:rustc-link-lib={}", lib_name);
