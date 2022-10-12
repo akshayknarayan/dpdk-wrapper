@@ -159,8 +159,11 @@ pub unsafe fn eth_dev_configure(port_id: u16, rx_rings: u16, tx_rings: u16) {
 use std::net::SocketAddrV4;
 
 #[inline]
-pub fn compute_flow_affinity(src_addr: SocketAddrV4, dst_addr: SocketAddrV4) -> u32 {
-    let num_queues = unsafe { lcore_count_() };
+pub fn compute_flow_affinity(
+    src_addr: SocketAddrV4,
+    dst_addr: SocketAddrV4,
+    num_queues: u16,
+) -> u32 {
     let src_ip = u32::from_be_bytes(src_addr.ip().octets());
     let dst_ip = u32::from_be_bytes(dst_addr.ip().octets());
     unsafe {
