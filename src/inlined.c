@@ -159,6 +159,11 @@ void eth_dev_configure_(uint16_t port_id, uint16_t rx_rings, uint16_t tx_rings) 
 
     printf("port_id: %u, rx_rings; %u, tx_rings: %u\n", port_id, rx_rings, tx_rings);
     rte_eth_dev_configure(port_id, rx_rings, tx_rings, &port_conf);
+
+    int ret = rte_eth_stats_reset(port_id);
+    if (ret != 0) {
+        printf("Unable to reset ethdev stats: %u: %s\n", -ret, rte_strerror(-ret));
+    }
 }
 
 /**

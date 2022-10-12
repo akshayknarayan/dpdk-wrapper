@@ -453,6 +453,7 @@ pub unsafe fn tx_burst(
 #[must_use]
 pub struct FlowSteeringHandle {
     dpdk_port: u16,
+    udp_port: u16,
     handle: *mut rte_flow,
 }
 
@@ -498,9 +499,9 @@ pub unsafe fn setup_flow_steering_solo(
 
     let flow_handle = flow_handle.assume_init();
     ensure!(!flow_handle.is_null(), "flow handle not initialized");
-
     Ok(FlowSteeringHandle {
         dpdk_port: dpdk_port_id,
+        udp_port: local_dst_port,
         handle: flow_handle,
     })
 }
@@ -536,6 +537,7 @@ pub unsafe fn setup_flow_steering_rss(
 
     Ok(FlowSteeringHandle {
         dpdk_port: dpdk_port_id,
+        udp_port: local_dst_port,
         handle: flow_handle,
     })
 }
@@ -551,4 +553,58 @@ pub unsafe fn flush_flow_steering(dpdk_port_id: u16) -> Result<(), Report> {
     }
 
     Ok(())
+}
+
+pub unsafe fn get_eth_stats(dpdk_port_id: u16) -> Result<rte_eth_stats, Report> {
+    let mut stats = std::mem::MaybeUninit::uninit();
+    let err = rte_eth_stats_get(dpdk_port_id, stats.as_mut_ptr());
+    ensure!(err == 0, "Failed to get eth device stats");
+    let stats = stats.assume_init();
+
+    let num_elems = rte_eth_xstats_get_names(dpdk_port_id, std::ptr::null_mut(), 0);
+    ensure!(num_elems >= 0, "Could not get names of xstats");
+    if num_elems == 0 {
+        debug!("no xstats");
+        return Ok(stats);
+    }
+
+    let num_elems = num_elems as usize;
+
+    let mut names: Vec<rte_eth_xstat_name> = Vec::with_capacity(num_elems);
+    let name_slots = names.spare_capacity_mut();
+    let res = rte_eth_xstats_get_names(
+        dpdk_port_id,
+        name_slots.as_mut_ptr() as *mut _,
+        name_slots.len() as _,
+    );
+    ensure!(
+        res > 0 && res as usize <= num_elems,
+        "rte_eth_xstats_get_names LIED to us"
+    );
+    names.set_len(res as usize);
+    let mut str_names = Vec::with_capacity(res as usize);
+    for n in names {
+        let s = std::ffi::CStr::from_ptr(n.name.as_ptr()).to_str()?;
+        str_names.push(s.to_owned());
+    }
+
+    let mut values = Vec::with_capacity(num_elems);
+    let values_slots = values.spare_capacity_mut();
+    let res = rte_eth_xstats_get(
+        dpdk_port_id,
+        values_slots[0].as_mut_ptr(),
+        values_slots.len() as _,
+    );
+    ensure!(
+        res > 0 && res as usize <= num_elems,
+        "rte_eth_xstats_get_names LIED to us"
+    );
+    values.set_len(res as usize);
+    let values = values.into_iter().map(|v| v.value);
+
+    // assemble the xstats hashmap
+    let xstats: std::collections::HashMap<_, u64> = str_names.into_iter().zip(values).collect();
+    debug!(?xstats, "xstats");
+
+    Ok(stats)
 }
