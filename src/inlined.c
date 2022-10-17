@@ -138,6 +138,29 @@ static uint8_t sym_rss_key[] = {
 };
 
 void eth_dev_configure_(uint16_t port_id, uint16_t rx_rings, uint16_t tx_rings) {
+	struct rte_fdir_conf fdir_conf = {
+		.mode = RTE_FDIR_MODE_PERFECT,
+		.pballoc = RTE_FDIR_PBALLOC_64K,
+		.status = RTE_FDIR_REPORT_STATUS,
+		.mask = {
+			.vlan_tci_mask = 0xFFEF,
+			.ipv4_mask     = {
+				.src_ip = 0xFFFFFFFF,
+				.dst_ip = 0xFFFFFFFF,
+			},
+			.ipv6_mask     = {
+				.src_ip = {0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF},
+				.dst_ip = {0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF},
+			},
+			.src_port_mask = 0xFFFF,
+			.dst_port_mask = 0xFFFF,
+			.mac_addr_byte_mask = 0xFF,
+			.tunnel_type_mask = 1,
+			.tunnel_id_mask = 0xFFFFFFFF,
+		},
+		.drop_queue = 127,
+	};
+
     //uint16_t mtu;
     struct rte_eth_dev_info dev_info = {};
     rte_eth_dev_info_get(port_id, &dev_info);
@@ -145,15 +168,20 @@ void eth_dev_configure_(uint16_t port_id, uint16_t rx_rings, uint16_t tx_rings) 
     //rte_eth_dev_get_mtu(port_id, &mtu);
     //fprintf(stderr, "Dev info MTU:%u\n", mtu);
     struct rte_eth_conf port_conf = {};
+
+    port_conf.fdir_conf = fdir_conf;
+
     port_conf.rxmode.max_rx_pkt_len = RX_PACKET_LEN;
 
     port_conf.rxmode.offloads = DEV_RX_OFFLOAD_JUMBO_FRAME | DEV_RX_OFFLOAD_IPV4_CKSUM;
     port_conf.rxmode.mq_mode = ETH_MQ_RX_RSS | ETH_MQ_RX_RSS_FLAG;
     //port_conf.rxmode.mq_mode = ETH_MQ_RX_NONE;
+
 //    port_conf.rx_adv_conf.rss_conf.rss_key = sym_rss_key;
 //    port_conf.rx_adv_conf.rss_conf.rss_key_len = 40;
     port_conf.rx_adv_conf.rss_conf.rss_hf = ETH_RSS_NONFRAG_IPV4_UDP;// | ETH_RSS_IP;
     //port_conf.rx_adv_conf.rss_conf.rss_hf = ETH_RSS_IPV4 | ETH_RSS_L4_DST_ONLY;
+
     port_conf.txmode.offloads = DEV_TX_OFFLOAD_MULTI_SEGS | DEV_TX_OFFLOAD_IPV4_CKSUM | DEV_TX_OFFLOAD_UDP_CKSUM;
     port_conf.txmode.mq_mode = ETH_MQ_TX_NONE;
 
