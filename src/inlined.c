@@ -224,6 +224,7 @@ static const struct rte_flow_item_eth eth_proto_mask = {
 static int config_udp_dst_port_match_rule(
     uint16_t dst_port,
     uint16_t dpdk_port_id,
+    struct rte_flow_item_udp *udp_flow,
     struct rte_flow_attr *attr_out,
     struct rte_flow_item (*pattern_out)[4]
 ) {
@@ -262,9 +263,7 @@ static int config_udp_dst_port_match_rule(
     eth_proto_ipv4.dst = local_eth_addr;
     eth_proto_ipv4.type = RTE_BE16(RTE_ETHER_TYPE_IPV4);
 
-	struct rte_flow_item_udp udp_flow = {
-		.hdr.dst_port = RTE_BE16(dst_port),
-	};
+	(udp_flow->hdr).dst_port = RTE_BE16(dst_port);
 
 	struct rte_flow_item patterns[] = {
 		{
@@ -280,7 +279,7 @@ static int config_udp_dst_port_match_rule(
 		{
 			.type = RTE_FLOW_ITEM_TYPE_UDP,
 			.mask = &udp_dst_port_mask,
-			.spec = &udp_flow,
+			.spec = udp_flow,
 			.last = NULL, /* not a range */
 		},
 		{
@@ -342,8 +341,9 @@ int setup_flow_steering_solo_(
 	int ret;
     struct rte_flow_attr attr = {};
     struct rte_flow_item patterns[4] = {};
+    struct rte_flow_item_udp udp_flow = {};
 
-    ret = config_udp_dst_port_match_rule(dst_port, dpdk_port_id, &attr, &patterns);
+    ret = config_udp_dst_port_match_rule(dst_port, dpdk_port_id, &udp_flow, &attr, &patterns);
     if (ret != 0) {
         return ret;
     }
