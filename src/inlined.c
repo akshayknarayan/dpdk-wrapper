@@ -150,9 +150,9 @@ void eth_dev_configure_(uint16_t port_id, uint16_t rx_rings, uint16_t tx_rings) 
     port_conf.rxmode.offloads = DEV_RX_OFFLOAD_JUMBO_FRAME | DEV_RX_OFFLOAD_IPV4_CKSUM;
     port_conf.rxmode.mq_mode = ETH_MQ_RX_RSS | ETH_MQ_RX_RSS_FLAG;
     //port_conf.rxmode.mq_mode = ETH_MQ_RX_NONE;
-    port_conf.rx_adv_conf.rss_conf.rss_key = sym_rss_key;
-    port_conf.rx_adv_conf.rss_conf.rss_key_len = 40;
-    port_conf.rx_adv_conf.rss_conf.rss_hf = ETH_RSS_UDP | ETH_RSS_IP;
+//    port_conf.rx_adv_conf.rss_conf.rss_key = sym_rss_key;
+//    port_conf.rx_adv_conf.rss_conf.rss_key_len = 40;
+    port_conf.rx_adv_conf.rss_conf.rss_hf = ETH_RSS_NONFRAG_IPV4_UDP;// | ETH_RSS_IP;
     //port_conf.rx_adv_conf.rss_conf.rss_hf = ETH_RSS_IPV4 | ETH_RSS_L4_DST_ONLY;
     port_conf.txmode.offloads = DEV_TX_OFFLOAD_MULTI_SEGS | DEV_TX_OFFLOAD_IPV4_CKSUM | DEV_TX_OFFLOAD_UDP_CKSUM;
     port_conf.txmode.mq_mode = ETH_MQ_TX_NONE;
@@ -208,9 +208,10 @@ static const struct rte_flow_item_ipv4 ipv4_any_addr = {
 
 
 static const struct rte_flow_item_eth eth_proto_mask = {
-    .dst.addr_bytes = "\xff\xff\xff\xff\xff\xff",
+//    .dst.addr_bytes = "\xff\xff\xff\xff\xff\xff",
+    .dst.addr_bytes = "\x00\x00\x00\x00\x00\x00",
     .src.addr_bytes = "\x00\x00\x00\x00\x00\x00",
-    .type = RTE_BE16(0x0000),
+    .type = RTE_BE16(0xffff),
 };
 
 /* Helper function to construct UDP dst port matching rule.
@@ -253,14 +254,14 @@ static int config_udp_dst_port_match_rule(
     //
     // Fortunately, it seems that the dst eth addr is a supported field, and since we apparently need
     // to have some field, we use that.
-    struct rte_ether_addr local_eth_addr;
-    ret = rte_eth_macaddr_get(dpdk_port_id, &local_eth_addr);
-    if (ret != 0) {
-        return ret;
-    }
+//    struct rte_ether_addr local_eth_addr;
+//    ret = rte_eth_macaddr_get(dpdk_port_id, &local_eth_addr);
+//    if (ret != 0) {
+//        return ret;
+//    }
 
     struct rte_flow_item_eth eth_proto_ipv4 = {};
-    eth_proto_ipv4.dst = local_eth_addr;
+//    eth_proto_ipv4.dst = local_eth_addr;
     eth_proto_ipv4.type = RTE_BE16(RTE_ETHER_TYPE_IPV4);
 
 	(udp_flow->hdr).dst_port = RTE_BE16(dst_port);
@@ -378,19 +379,24 @@ int setup_flow_steering_rss_(
     const uint16_t *dpdk_queue_ids,
 	struct rte_flow **flow_handle_out
 ) {
-	int ret;
-    struct rte_flow_attr attr = {};
-    struct rte_flow_item patterns[4] = {};
+//	int ret;
+//    struct rte_flow_attr attr = {};
+	struct rte_flow_attr attr = {
+		.group = 0,
+		.priority = 0,
+		.ingress = 1,
+	};
+    //struct rte_flow_item patterns[4] = {};
 
-    ret = config_udp_dst_port_match_rule(dst_port, dpdk_port_id, &attr, &patterns);
-    if (ret != 0) {
-        return ret;
-    }
+    //ret = config_udp_dst_port_match_rule(dst_port, dpdk_port_id, &attr, &patterns);
+    //if (ret != 0) {
+    //    return ret;
+    //}
+    struct rte_flow_item patterns[] = { { .type = RTE_FLOW_ITEM_TYPE_END } };
 
-    struct rte_flow_action_rss rss_action = {
-        .queue_num = num_queues,
-        .queue = dpdk_queue_ids,
-    };
+    struct rte_flow_action_rss rss_action = {};
+    rss_action.queue_num = num_queues;
+    rss_action.queue = dpdk_queue_ids;
 
     struct rte_flow_action actions[] = {
         {
