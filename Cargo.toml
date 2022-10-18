@@ -3,6 +3,10 @@ name = "dpdk-wrapper"
 version = "0.1.0"
 edition = "2021"
 
+[features]
+xl710_intel = []
+cx3_mlx = []
+
 [dependencies]
 color-eyre = "0.5"
 tracing = "0.1"

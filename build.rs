@@ -4,6 +4,12 @@ use std::fs::canonicalize;
 use std::path::Path;
 use std::process::Command;
 
+#[cfg(all(feature = "xl710_intel", feature = "cx3_mlx"))]
+std::compile_error!("exactly one of xl710_intel or cx3_mlx is required");
+
+#[cfg(not(any(feature = "xl710_intel", feature = "cx3_mlx")))]
+std::compile_error!("exactly one of xl710_intel or cx3_mlx is required");
+
 fn main() {
     // Following https://github.com/sujayakar/dpdk-rs/blob/main/build.rs
     // BUILD DPDK: only if the HEAD commit has changed
@@ -104,6 +110,13 @@ fn main() {
     compiler.flag("-gdwarf-2");
     compiler.flag("-Wno-unused-parameter");
     compiler.flag("-Wno-deprecated-declarations");
+    if cfg!(feature = "xl710_intel") {
+        compiler.flag("-D__xl710_intel__");
+    } else if cfg!(feature = "cx3_mlx") {
+        compiler.flag("-D__cx3_mlx__");
+    } else {
+        unreachable!("exactly one of xl710_intel or cx3_mlx is required");
+    }
     let inlined_file = Path::new(&cargo_dir).join("src").join("inlined.c");
     compiler.file(inlined_file.to_str().unwrap());
     for header_location in &header_locations {
