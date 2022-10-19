@@ -251,6 +251,7 @@ static const struct rte_flow_item_eth eth_proto_mask = {
 static int config_udp_dst_port_match_rule(
     uint16_t dst_port,
     uint16_t dpdk_port_id,
+    struct rte_flow_item_eth *eth_proto_ipv4,
     struct rte_flow_item_udp *udp_flow,
     struct rte_flow_attr *attr_out,
     struct rte_flow_item (*pattern_out)[4]
@@ -264,7 +265,6 @@ static int config_udp_dst_port_match_rule(
 		.priority = 0,
 		.ingress = 1,
 	};
-    struct rte_flow_item_eth eth_proto_ipv4 = {};
 
 #ifdef __cx3_mlx__
     // We don't actually care about matching on the local eth address. But:
@@ -287,11 +287,11 @@ static int config_udp_dst_port_match_rule(
         return ret;
     }
 
-    eth_proto_ipv4.dst = local_eth_addr;
+    memcpy(&(eth_proto_ipv4->dst), &local_eth_addr, sizeof(struct rte_ether_addr));
 #endif
 #ifdef __xl710_intel__
     // on I40E matching on just EtherType seems to be fine.
-    eth_proto_ipv4.type = RTE_BE16(RTE_ETHER_TYPE_IPV4);
+    eth_proto_ipv4->type = RTE_BE16(RTE_ETHER_TYPE_IPV4);
 #endif
 
 	(udp_flow->hdr).dst_port = RTE_BE16(dst_port);
@@ -300,7 +300,7 @@ static int config_udp_dst_port_match_rule(
 		{
 			.type = RTE_FLOW_ITEM_TYPE_ETH,
             .mask = &eth_proto_mask,
-            .spec = &eth_proto_ipv4,
+            .spec = eth_proto_ipv4,
 		},
 		{
 			.type = RTE_FLOW_ITEM_TYPE_IPV4,
@@ -372,9 +372,10 @@ int setup_flow_steering_solo_(
 	int ret;
     struct rte_flow_attr attr = {};
     struct rte_flow_item patterns[4] = {};
-    struct rte_flow_item_udp udp_flow = {};
+    struct rte_flow_item_eth eth_pattern = {};
+    struct rte_flow_item_udp udp_pattern = {};
 
-    ret = config_udp_dst_port_match_rule(dst_port, dpdk_port_id, &udp_flow, &attr, &patterns);
+    ret = config_udp_dst_port_match_rule(dst_port, dpdk_port_id, &eth_pattern, &udp_pattern, &attr, &patterns);
     if (ret != 0) {
         return ret;
     }
@@ -431,9 +432,10 @@ int setup_flow_steering_rss_(
 #ifdef __cx3_mlx__
     int ret;
     struct rte_flow_item patterns[4] = {};
-    struct rte_flow_item_udp udp_flow = {};
+    struct rte_flow_item_eth eth_pattern = {};
+    struct rte_flow_item_udp udp_pattern = {};
 
-    ret = config_udp_dst_port_match_rule(dst_port, dpdk_port_id, &udp_flow, &attr, &patterns);
+    ret = config_udp_dst_port_match_rule(dst_port, dpdk_port_id, &eth_pattern, &udp_pattern, &attr, &patterns);
     if (ret != 0) {
         return ret;
     }
