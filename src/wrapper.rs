@@ -472,8 +472,11 @@ impl Drop for FlowSteeringHandle {
             let err = clear_flow_steering_(self.dpdk_port, self.handle);
             if err != 0 {
                 warn!(?err, "Error clearing rte_flow entry");
+                return;
             }
         }
+
+        debug!(?self.udp_port, "Cleared flow steering rule");
     }
 }
 
