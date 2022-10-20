@@ -7,7 +7,9 @@ pushd $DPDK
 INSTALL_DIR="$DPDK/install"
 meson --prefix=$INSTALL_DIR build 
 pushd build
-ninja
-ninja install
+if ninja | grep -vq "no work to do"; then
+  echo "installing"
+  ninja install
+fi
 popd
 popd
