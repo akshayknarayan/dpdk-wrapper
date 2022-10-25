@@ -8,17 +8,17 @@ xl710_intel = []
 cx3_mlx = []
 
 [dependencies]
-color-eyre = "0.5"
+color-eyre = "0.6"
 tracing = "0.1"
 byteorder = "1"
 eui48 = "1"
 flume = "0.10"
 toml = "0.5"
-ahash = "0.7"
+ahash = "0.8"
 rand = { version = "0.8", features = ["small_rng"] }
 
 [build-dependencies]
-bindgen = "0.59"
+bindgen = "0.61"
 cc = "1"
 
 [dev-dependencies]
