@@ -10,12 +10,11 @@ use crate::{
 };
 use ahash::HashMap;
 use color_eyre::{
-    eyre::{bail, ensure, WrapErr},
+    eyre::{bail, eyre, WrapErr},
     Result,
 };
 use eui48::MacAddress;
 use flume::{Receiver, Sender};
-use std::collections::BTreeSet;
 use std::mem::zeroed;
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
 use std::sync::{Arc, Mutex};
@@ -119,7 +118,7 @@ impl DpdkConn {
 
 struct BoundPort {
     bound_port: u16,
-    free_ports: Arc<Mutex<BTreeSet<u16>>>,
+    ports: Arc<Mutex<PortManager>>,
 }
 
 impl std::fmt::Debug for BoundPort {
@@ -131,7 +130,7 @@ impl std::fmt::Debug for BoundPort {
 impl Drop for BoundPort {
     fn drop(&mut self) {
         // put the port back
-        self.free_ports.lock().unwrap().insert(self.bound_port);
+        self.ports.lock().unwrap().release(self.bound_port);
     }
 }
 
@@ -217,12 +216,78 @@ impl BoundDpdkConn {
     }
 }
 
+#[derive(Clone, Debug)]
+enum PortState {
+    Free,
+    Exclusive,
+    NonExclusive(Receiver<BoundDpdkConn>),
+}
+
+impl Default for PortState {
+    fn default() -> Self {
+        Self::Free
+    }
+}
+
+#[derive(Debug)]
+struct PortManager(HashMap<u16, PortState>);
+
+impl Default for PortManager {
+    fn default() -> Self {
+        PortManager((1024..=65535).map(|x| (x, Default::default())).collect())
+    }
+}
+
+impl PortManager {
+    fn bind_exclusive(&mut self, port: Option<u16>) -> Result<u16> {
+        for cand_port in port.map_or(1024u16..=65535, |p| p..=p) {
+            match self.0.get_mut(&cand_port) {
+                None => bail!("Unregistered port {:?}", cand_port),
+                Some(ps @ PortState::Free) => {
+                    debug!(?port, ?cand_port, "setting exclusive port");
+                    *ps = PortState::Exclusive;
+                    return Ok(cand_port);
+                }
+                Some(x) => {
+                    debug!(?port, ?cand_port, ?x, "port not free");
+                }
+            }
+        }
+
+        Err(eyre!("Could not find a port for {:?}", port))
+    }
+
+    fn bind_non_exclusive(
+        &mut self,
+        port: u16,
+    ) -> Result<(Receiver<BoundDpdkConn>, Option<Sender<BoundDpdkConn>>)> {
+        match self.0.get_mut(&port) {
+            None => bail!("Unregistered port {:?}", port),
+            Some(ps @ PortState::Free) => {
+                let (accept_s, accept_r) = flume::bounded(16);
+                *ps = PortState::NonExclusive(accept_r.clone());
+                Ok((accept_r, Some(accept_s)))
+            }
+            Some(PortState::NonExclusive(ref r)) => Ok((r.clone(), None)),
+            _ => {
+                bail!("Requested port not available: {:?}", port);
+            }
+        }
+    }
+
+    fn release(&mut self, port: u16) {
+        if let Some(ps) = self.0.get_mut(&port) {
+            *ps = PortState::Free;
+        }
+    }
+}
+
 /// Socket manager for [`DPDKIoKernel`].
 ///
 /// Created by [`DpdkIoKernel::new`]. Tracks available ports for sockets to use.
 #[derive(Clone, Debug)]
 pub struct DpdkIoKernelHandle {
-    free_ports: Arc<Mutex<BTreeSet<u16>>>,
+    ports: Arc<Mutex<PortManager>>,
     new_conns: Sender<Conn>,
     outgoing_pkts: Sender<Msg>,
 }
@@ -232,7 +297,7 @@ const CHANNEL_SIZE: usize = 256;
 impl DpdkIoKernelHandle {
     fn new(new_conns: Sender<Conn>, outgoing_pkts: Sender<Msg>) -> Self {
         Self {
-            free_ports: Arc::new(Mutex::new((1024..=65535).collect())), // all ports start free.
+            ports: Default::default(), // all ports start free.
             new_conns,
             outgoing_pkts,
         }
@@ -241,29 +306,7 @@ impl DpdkIoKernelHandle {
     /// Make a new UDP socket.
     pub fn socket(&self, bind: Option<u16>) -> Result<DpdkConn> {
         // assign a port.
-        let mut free_ports_g = self.free_ports.lock().unwrap();
-        ensure!(!free_ports_g.is_empty(), "No ports left");
-        let port = match bind {
-            Some(p) => {
-                ensure!(free_ports_g.remove(&p), "Requested port not available");
-                p
-            }
-            None => {
-                use rand::{Rng, SeedableRng};
-                let mut rng = rand::rngs::SmallRng::from_entropy();
-                let mut max = 60000;
-                loop {
-                    let idx: u16 = rng.gen_range(0..max);
-                    let nxt = free_ports_g.range(idx..).next().copied();
-                    if let Some(port) = nxt {
-                        free_ports_g.remove(&port);
-                        break port;
-                    } else {
-                        max = idx;
-                    }
-                }
-            }
-        };
+        let port = self.ports.lock().unwrap().bind_exclusive(bind)?;
 
         let (incoming_s, incoming_r) = flume::bounded(CHANNEL_SIZE);
         let out_ch = self.outgoing_pkts.clone();
@@ -278,7 +321,7 @@ impl DpdkIoKernelHandle {
         Ok(DpdkConn {
             local_port: BoundPort {
                 bound_port: port,
-                free_ports: self.free_ports.clone(),
+                ports: self.ports.clone(),
             },
             outgoing_pkts: out_ch,
             incoming_pkts: incoming_r,
@@ -286,28 +329,44 @@ impl DpdkIoKernelHandle {
     }
 
     /// Make a UDP socket that demuxes packets not just by dst port, but also by src ip/src port.
+    ///
+    /// This function can be called multiple times on a dest. port. In this case it will return a
+    /// `Receiver` that splits new connections with previously returned `Receiver`s.
     pub fn accept(&self, port: u16) -> Result<Receiver<BoundDpdkConn>> {
-        // claim the port.
-        let mut free_ports_g = self.free_ports.lock().unwrap();
-        ensure!(free_ports_g.remove(&port), "Requested port not available");
-
-        let (accept_s, accept_r) = flume::bounded(16);
-        let out_ch = self.outgoing_pkts.clone();
-        let bound_port = Arc::new(BoundPort {
-            bound_port: port,
-            free_ports: self.free_ports.clone(),
-        });
-
-        self.new_conns
-            .send(Conn::Accept {
-                local_port: bound_port,
-                outgoing_pkts: out_ch,
-                ch: accept_s,
-                remotes: Default::default(),
-            })
-            .wrap_err("channel send to iokernel failed")?;
+        // try to claim the port.
+        let (accept_r, sender_opt) = self.ports.lock().unwrap().bind_non_exclusive(port)?;
+        if let Some(sender) = sender_opt {
+            let bound_port = Arc::new(BoundPort {
+                bound_port: port,
+                ports: self.ports.clone(),
+            });
+            self.accept_inner(bound_port, sender, Default::default())?;
+        }
 
         Ok(accept_r)
+    }
+
+    /// Make a UDP socket that demuxes packets not just by dst port, but also by src ip/src port.
+    /// Pass in a HashMap of already-initialized connections.
+    ///
+    /// Any *new* connections will arrive over the returned `Receiver`. Connections already in
+    /// `remotes` won't be sent.
+    fn accept_inner(
+        &self,
+        port: Arc<BoundPort>,
+        accept_s: Sender<BoundDpdkConn>,
+        remotes: HashMap<SocketAddrV4, Sender<Msg>>,
+    ) -> Result<()> {
+        let out_ch = self.outgoing_pkts.clone();
+        self.new_conns
+            .send(Conn::Accept {
+                local_port: port,
+                outgoing_pkts: out_ch,
+                ch: accept_s,
+                remotes,
+            })
+            .wrap_err("channel send to iokernel failed")?;
+        Ok(())
     }
 }
 
