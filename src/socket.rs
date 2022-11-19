@@ -114,6 +114,10 @@ impl DpdkConn {
 
         Ok(&mut msgs_buf[..slot_idx])
     }
+
+    pub fn get_port(&self) -> u16 {
+        self.local_port.bound_port
+    }
 }
 
 struct BoundPort {
@@ -144,6 +148,10 @@ pub struct BoundDpdkConn {
 impl BoundDpdkConn {
     pub fn remote_addr(&self) -> SocketAddrV4 {
         self.remote_addr
+    }
+
+    pub fn port(&self) -> u16 {
+        self.local_port.bound_port
     }
 
     /// Send a packet.
@@ -296,26 +304,52 @@ impl PortManager {
 /// Created by [`DpdkIoKernel::new`]. Tracks available ports for sockets to use.
 #[derive(Clone)]
 pub struct DpdkIoKernelHandle {
+    ip_addr: Ipv4Addr,
+    arp_table: HashMap<Ipv4Addr, MacAddress>,
     ports: Arc<PortManager>,
     new_conns: Sender<Conn>,
     outgoing_pkts: Sender<Msg>,
+    shutdown: Sender<()>,
 }
 
 const CHANNEL_SIZE: usize = 256;
 
 impl Debug for DpdkIoKernelHandle {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_tuple("DpdkIoKernelHandle").finish()
+        f.debug_tuple("DpdkIoKernelHandle")
+            .field(&self.ip_addr)
+            .finish()
     }
 }
 
 impl DpdkIoKernelHandle {
-    fn new(new_conns: Sender<Conn>, outgoing_pkts: Sender<Msg>) -> Self {
+    fn new(
+        ip_addr: Ipv4Addr,
+        arp_table: HashMap<Ipv4Addr, MacAddress>,
+        new_conns: Sender<Conn>,
+        outgoing_pkts: Sender<Msg>,
+        shutdown: Sender<()>,
+    ) -> Self {
         Self {
+            ip_addr,
+            arp_table,
             ports: Default::default(), // all ports start free.
             new_conns,
             outgoing_pkts,
+            shutdown,
         }
+    }
+
+    pub fn ip_addr(&self) -> Ipv4Addr {
+        self.ip_addr
+    }
+
+    pub fn arp_table(&self) -> HashMap<Ipv4Addr, MacAddress> {
+        self.arp_table.clone()
+    }
+
+    pub fn shutdown(&self) {
+        self.shutdown.send(()).unwrap();
     }
 
     /// Make a new UDP socket.
@@ -359,6 +393,52 @@ impl DpdkIoKernelHandle {
         }
 
         Ok(accept_r)
+    }
+
+    /// Make a UDP socket that demuxes packets not just by dst port, but also by src ip/src port.
+    /// Pass in an iterator of remote addresses that there are already connections for.
+    ///
+    /// This function won't be called more than once per dest. port to set up.
+    ///
+    /// Connections already in `remote_addrs` will be in the returned Vec. Any *new* connections
+    /// will arrive over the returned `Receiver`.
+    pub fn init_accepted(
+        &self,
+        port: u16,
+        remote_addrs: impl IntoIterator<Item = SocketAddrV4>,
+    ) -> Result<(
+        HashMap<SocketAddrV4, BoundDpdkConn>,
+        Receiver<BoundDpdkConn>,
+    )> {
+        let (accept_r, sender_opt) = self.ports.bind_non_exclusive(port)?;
+        let bound_port = Arc::new(BoundPort {
+            bound_port: port,
+            ports: self.ports.clone(),
+        });
+
+        let accept_s = sender_opt.ok_or(eyre!(
+            "Cannot call init_accepted more than once per dest port to set up: {:?}",
+            port
+        ))?;
+
+        // 1. make maps of addr -> BoundDpdkConn, addr -> Sender<Msg>)
+        let (conns, remotes) = remote_addrs
+            .into_iter()
+            .map(|remote_addr| {
+                let (incoming_s, incoming_r) = flume::bounded(CHANNEL_SIZE);
+                let cn = BoundDpdkConn {
+                    local_port: Arc::clone(&bound_port),
+                    remote_addr,
+                    outgoing_pkts: self.outgoing_pkts.clone(),
+                    incoming_pkts: incoming_r,
+                };
+
+                ((remote_addr, cn), (remote_addr, incoming_s))
+            })
+            .unzip();
+        // 2. call pre_accepted with the addr -> Sender map
+        self.accept_inner(bound_port, accept_s, remotes)?;
+        Ok((conns, accept_r))
     }
 
     /// Make a UDP socket that demuxes packets not just by dst port, but also by src ip/src port.
@@ -485,6 +565,15 @@ pub struct DpdkIoKernel {
     new_conns: Receiver<Conn>,
     outgoing_pkts: Receiver<Msg>,
     conns: HashMap<u16, Conn>,
+    shutdown: Receiver<()>,
+}
+
+impl Drop for DpdkIoKernel {
+    fn drop(&mut self) {
+        unsafe {
+            rte_mempool_free(self.mbuf_pool);
+        }
+    }
 }
 
 impl DpdkIoKernel {
@@ -496,9 +585,15 @@ impl DpdkIoKernel {
     ///   - "arp" entries should have "ip" and "mac" keys.
     ///
     /// # Example Config
+    ///
+    /// EAL args:
+    /// - `-n 4` is for memory channels
+    /// - `-l 0-4` means run on cores 0-4
+    /// - `--allow 0000:08:00.0` means use the device with PCIe address `0000:08:00.0`.
+    ///
     /// ```toml
     /// [dpdk]
-    /// eal_init = ["-n", "4", "--allow", "0000:99:00.0", "--vdev", "net_pcap0,tx_pcap=out.pcap"]
+    /// eal_init = ["-n", "4", "-l", "0-4", "--allow", "0000:08:00.0", "--proc-type=auto"]
     ///
     /// [net]
     /// ip = "1.2.3.4"
@@ -514,7 +609,23 @@ impl DpdkIoKernel {
     pub fn new(config_path: std::path::PathBuf) -> Result<(Self, DpdkIoKernelHandle)> {
         let (dpdk_config, ip_addr, arp_table) = parse_cfg(config_path.as_path())?;
         let (mbuf_pools, nb_ports) = dpdk_init(dpdk_config, 1)?;
+        Self::do_new(mbuf_pools, nb_ports, ip_addr, arp_table)
+    }
 
+    pub fn new_configure_only(
+        ip_addr: Ipv4Addr,
+        arp_table: HashMap<Ipv4Addr, MacAddress>,
+    ) -> Result<(Self, DpdkIoKernelHandle)> {
+        let (mbuf_pools, nb_ports) = dpdk_configure(1)?;
+        Self::do_new(mbuf_pools, nb_ports, ip_addr, arp_table)
+    }
+
+    fn do_new(
+        mbuf_pools: Vec<*mut rte_mempool>,
+        nb_ports: u16,
+        ip_addr: Ipv4Addr,
+        arp_table: HashMap<Ipv4Addr, MacAddress>,
+    ) -> Result<(Self, DpdkIoKernelHandle)> {
         let mbuf_pool = mbuf_pools[0];
         let port = nb_ports - 1;
 
@@ -527,24 +638,28 @@ impl DpdkIoKernel {
         let (outgoing_pkts_s, outgoing_pkts_r) = flume::bounded(16); // 16 is the max burst size
         let conns = Default::default();
 
+        // shutdown signaller.
+        let (shutdown_s, shutdown_r) = flume::bounded(0);
+
         Ok((
             Self {
                 eth_addr,
                 ip_addr,
                 port,
                 mbuf_pool,
-                arp_table,
+                arp_table: arp_table.clone(),
                 new_conns: new_conns_r,
                 outgoing_pkts: outgoing_pkts_r,
                 conns,
+                shutdown: shutdown_r,
             },
-            DpdkIoKernelHandle::new(new_conns_s, outgoing_pkts_s),
+            DpdkIoKernelHandle::new(ip_addr, arp_table, new_conns_s, outgoing_pkts_s, shutdown_s),
         ))
     }
 
     /// Iokernel event loop.
     ///
-    /// This function will never return.
+    /// This function returns only if the shutdown channel receives something.
     ///
     /// Responsibilities:
     /// 1. dpdk-poll for incoming packets,
@@ -552,7 +667,7 @@ impl DpdkIoKernel {
     ///   1b. channel-send if connection, drop if not
     /// 2. channel-wait for outgoing packets, and transmit them.
     /// 3. channel-wait for new connections
-    pub fn run(mut self) -> ! {
+    pub fn run(mut self) {
         let mut rx_bufs: [*mut rte_mbuf; RECEIVE_BURST_SIZE as usize] = unsafe { zeroed() };
         let mut tx_bufs: [*mut rte_mbuf; RECEIVE_BURST_SIZE as usize] = unsafe { zeroed() };
 
@@ -566,6 +681,10 @@ impl DpdkIoKernel {
         let mut ip_id = 1u16;
 
         loop {
+            if let Ok(_) = self.shutdown.try_recv() {
+                break;
+            }
+
             // 1. first try to receive.
             let num_received = unsafe {
                 rte_eth_rx_burst(
@@ -715,5 +834,7 @@ impl DpdkIoKernel {
                 }
             }
         }
+
+        warn!(ip_addr = ?self.ip_addr, "exiting dpdk_thread");
     }
 }

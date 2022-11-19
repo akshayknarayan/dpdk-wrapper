@@ -1,6 +1,7 @@
 use crate::bindings::*;
 use crate::utils;
 use color_eyre::eyre::{bail, ensure, eyre, Report, Result, WrapErr};
+use std::sync::Once;
 use std::{
     ffi::{CStr, CString},
     mem::MaybeUninit,
@@ -320,17 +321,41 @@ fn dpdk_init_helper(num_cores: usize) -> Result<(Vec<*mut rte_mempool>, u16)> {
     }
 }
 
-/// Initializes DPDK EAL and ports.
+/// Initialize DPDK.
+///
+/// DPDK init (including EAL args) can only happen once, so make sure enough lcores are allowed
+/// when calling, because it can't be changed.
+static DPDK_EAL_INIT: Once = Once::new();
+pub fn dpdk_init_once(eal_args: Vec<String>) -> Result<(), Report> {
+    let mut res = Ok(());
+    DPDK_EAL_INIT
+        .call_once(|| res = dpdk_eal_init(eal_args).wrap_err("EAL initialization failed."));
+    res
+}
+
+/// Initializes DPDK EAL and then calls into `dpdk_configure`.
+///
+///
+/// Arguments:
+/// - eal_args: DPDK eal initialization args.
+pub fn dpdk_init(eal_args: Vec<String>, num_cores: usize) -> Result<(Vec<*mut rte_mempool>, u16)> {
+    dpdk_init_once(eal_args)?;
+    dpdk_configure(num_cores)
+}
+
+/// Configure dpdk ports, mempools,
 ///
 /// Returns mempool that allocates mbufs with `MBUF_BUF_SIZE` of buffer space.
 ///
-/// Arguments:
-/// * eal_args: - DPDK eal initialization args.
-pub fn dpdk_init(eal_args: Vec<String>, num_cores: usize) -> Result<(Vec<*mut rte_mempool>, u16)> {
-    dpdk_eal_init(eal_args).wrap_err("EAL initialization failed.")?;
-
+/// - num_cores: the number of mempools and queues to initialize. Cannot be greater that the number
+/// of lcores specified in eal_args.
+pub fn dpdk_configure(num_cores: usize) -> Result<(Vec<*mut rte_mempool>, u16)> {
     let num_lcores = unsafe { rte_lcore_count() };
     debug!(?num_lcores, "lcore info");
+    ensure!(
+        num_lcores >= num_cores as _,
+        "Not enough EAL lcores for requested number of dpdk threads."
+    );
 
     // init ports, mempools on the rx side
     dpdk_init_helper(num_cores)
