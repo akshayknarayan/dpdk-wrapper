@@ -1,7 +1,10 @@
 use crate::bindings::*;
 use crate::utils;
 use color_eyre::eyre::{bail, ensure, eyre, Report, Result, WrapErr};
-use std::sync::Once;
+use std::sync::{
+    atomic::{AtomicUsize, Ordering},
+    Once,
+};
 use std::{
     ffi::{CStr, CString},
     mem::MaybeUninit,
@@ -10,23 +13,28 @@ use std::{
 use tracing::{debug, info, trace, warn};
 
 #[inline]
-unsafe fn dpdk_error(func_name: &str, retval: Option<std::os::raw::c_int>) -> Result<()> {
+fn dpdk_error(func_name: &str, retval: Option<std::os::raw::c_int>) -> Result<()> {
     let mut errno = match retval {
         Some(x) => x,
-        None => rte_errno(),
+        None => unsafe { rte_errno() },
     };
+
+    if errno == 0 {
+        return Ok(());
+    }
+
     if errno < 0 {
         errno *= -1;
     }
-    let c_buf = rte_strerror(errno);
-    let c_str: &CStr = CStr::from_ptr(c_buf);
+    let c_buf = unsafe { rte_strerror(errno) };
+    let c_str: &CStr = unsafe { CStr::from_ptr(c_buf) };
     let str_slice: &str = c_str.to_str().unwrap();
-    bail!(
+    Err(eyre!(
         "Exiting from {}: Error {}: {:?}",
         func_name,
         errno,
         str_slice
-    );
+    ))
 }
 
 #[inline]
@@ -166,6 +174,9 @@ unsafe fn initialize_dpdk_port(
         )
     );
     assert_eq!(rte_eth_dev_is_valid_port(port_id), 1);
+    let res = rte_eth_dev_stop(port_id);
+    dpdk_error("rte_eth_dev_stop", Some(res))?;
+
     let rx_rings: u16 = num_queues;
     let tx_rings: u16 = num_queues;
 
@@ -199,8 +210,14 @@ unsafe fn initialize_dpdk_port(
         reserved_ptrs: [std::ptr::null_mut(), std::ptr::null_mut()],
     };
 
-    dpdk_ok!(eth_dev_configure(port_id, rx_rings, tx_rings));
-    debug!("eth_dev_configure ok");
+    let res = eth_dev_configure(port_id, rx_rings, tx_rings);
+    ensure!(
+        0 == res,
+        format!(
+            "rte_eth_dev_configure on DPDK port {} failed: {}",
+            port_id, res
+        )
+    );
 
     // can be -1, which == SOCKET_ID_ANY, so cast is ok
     static_assert!(SOCKET_ID_ANY == -1);
@@ -279,6 +296,7 @@ fn create_native_mempool(name: &str, nb_ports: u16) -> Result<*mut rte_mempool> 
     create_mempool(name, nb_ports, MBUF_BUF_SIZE as _, NUM_MBUFS.into())
 }
 
+static MEMPOOL_GENERATION_NUM: AtomicUsize = AtomicUsize::new(0);
 /// Initializes DPDK ports, and memory pools.
 /// Returns mempool that allocates mbufs with `MBUF_BUF_SIZE` of buffer space.
 fn dpdk_init_helper(num_cores: usize) -> Result<(Vec<*mut rte_mempool>, u16)> {
@@ -291,8 +309,9 @@ fn dpdk_init_helper(num_cores: usize) -> Result<(Vec<*mut rte_mempool>, u16)> {
         }
 
         let mut default_pools: Vec<*mut rte_mempool> = Vec::new();
+        let gen_num = MEMPOOL_GENERATION_NUM.fetch_add(1, Ordering::SeqCst);
         for i in 0..num_cores {
-            let name = format!("default_mbuf_pool_{}", i);
+            let name = format!("default_mbuf_pool_{}_{}", gen_num, i);
             let mbuf_pool = create_native_mempool(&name, nb_ports).wrap_err(format!(
                 "Not able to create mbuf pool {} in dpdk_init.",
                 nb_ports

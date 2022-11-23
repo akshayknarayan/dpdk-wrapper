@@ -312,7 +312,7 @@ pub struct DpdkIoKernelHandle {
     shutdown: Sender<()>,
 }
 
-const CHANNEL_SIZE: usize = 256;
+const CHANNEL_SIZE: usize = 512;
 
 impl Debug for DpdkIoKernelHandle {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -780,8 +780,6 @@ impl DpdkIoKernel {
                         ipv4_addr: *to_ip,
                         ether_addr: *dst_ether_addr,
                     };
-
-                    trace!(?src_info, ?dst_info, "writing header");
 
                     // fill header
                     let hdr_size = match fill_in_header(

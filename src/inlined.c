@@ -138,12 +138,6 @@ static uint8_t sym_rss_key[] = {
 };
 
 int eth_dev_configure_(uint16_t port_id, uint16_t rx_rings, uint16_t tx_rings) {
-    struct rte_eth_dev_info dev_info = {};
-    rte_eth_dev_info_get(port_id, &dev_info);
-    rte_eth_dev_set_mtu(port_id, RX_PACKET_LEN);
-
-    struct rte_eth_conf port_conf = {};
-
 	struct rte_fdir_conf fdir_conf = {
 		.mode = RTE_FDIR_MODE_PERFECT,
 		.pballoc = RTE_FDIR_PBALLOC_64K,
@@ -166,6 +160,12 @@ int eth_dev_configure_(uint16_t port_id, uint16_t rx_rings, uint16_t tx_rings) {
 		},
 		.drop_queue = 127,
 	};
+
+    struct rte_eth_dev_info dev_info = {};
+    rte_eth_dev_info_get(port_id, &dev_info);
+    rte_eth_dev_set_mtu(port_id, RX_PACKET_LEN);
+    struct rte_eth_conf port_conf = {};
+
     port_conf.fdir_conf = fdir_conf;
 
     port_conf.rxmode.max_rx_pkt_len = RX_PACKET_LEN;
@@ -188,7 +188,6 @@ int eth_dev_configure_(uint16_t port_id, uint16_t rx_rings, uint16_t tx_rings) {
     ret = rte_eth_stats_reset(port_id);
     if (ret != 0) {
         printf("Unable to reset ethdev stats: %u: %s\n", -ret, rte_strerror(-ret));
-        return ret;
     }
 
     return 0;
