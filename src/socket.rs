@@ -312,8 +312,6 @@ pub struct DpdkIoKernelHandle {
     shutdown: Sender<()>,
 }
 
-const CHANNEL_SIZE: usize = 512;
-
 impl Debug for DpdkIoKernelHandle {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_tuple("DpdkIoKernelHandle")
@@ -321,6 +319,8 @@ impl Debug for DpdkIoKernelHandle {
             .finish()
     }
 }
+
+const CHANNEL_SIZE: usize = 256;
 
 impl DpdkIoKernelHandle {
     fn new(
@@ -486,7 +486,7 @@ impl Conn {
         }
     }
 
-    fn got_packet(&mut self, msg: Msg) -> Result<()> {
+    fn got_packet(&mut self, msg: Msg, num_dropped: &mut usize) -> Result<()> {
         match self {
             Conn::Socket { ch, .. } => {
                 match ch.try_send(msg) {
@@ -494,8 +494,8 @@ impl Conn {
                         bail!("Disconnected");
                     }
                     Err(flume::TrySendError::Full(_msg)) => {
-                        trace!("incoming channel is full");
                         // drop the packet
+                        *num_dropped += 1;
                     }
                     Ok(_) => (),
                 }
@@ -540,8 +540,8 @@ impl Conn {
                         remotes.insert(from_addr, cn_s);
                     }
                     Err(flume::TrySendError::Full(_msg)) => {
-                        trace!("incoming channel is full");
-                        // I guess we drop this packet
+                        // drop the packet
+                        *num_dropped += 1;
                     }
                     Ok(_) => (),
                 }
@@ -682,6 +682,7 @@ impl DpdkIoKernel {
 
         loop {
             if let Ok(_) = self.shutdown.try_recv() {
+                debug!("exiting dpdk-thread loop");
                 break;
             }
 
@@ -695,6 +696,7 @@ impl DpdkIoKernel {
                 )
             } as usize;
             let mut num_valid = 0;
+            let mut num_dropped = 0;
             for i in 0..num_received {
                 // first: parse if valid packet, and what the payload size is
                 let (is_valid, src_ether, src_ip, src_port, dst_port, payload_length) =
@@ -726,12 +728,12 @@ impl DpdkIoKernel {
                             buf: payload.to_vec(),
                         };
 
-                        if let Err(_) = ch.got_packet(msg) {
+                        if let Err(_) = ch.got_packet(msg, &mut num_dropped) {
                             remove = true;
                         }
                     }
                     None => {
-                        trace!(?dst_port, "Got packet for unassigned port, dropping");
+                        num_dropped += 1;
                     }
                 }
 
@@ -744,8 +746,8 @@ impl DpdkIoKernel {
                 }
             }
 
-            if num_valid > 0 {
-                trace!(?num_valid, "Received valid packets");
+            if num_valid > 0 || num_dropped > 0 {
+                trace!(?num_valid, ?num_dropped, "Received valid packets");
             }
 
             // 2. second, see if we have anything to send.
