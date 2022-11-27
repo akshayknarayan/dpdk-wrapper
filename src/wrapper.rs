@@ -174,6 +174,8 @@ unsafe fn initialize_dpdk_port(
         )
     );
     assert_eq!(rte_eth_dev_is_valid_port(port_id), 1);
+
+    debug!(?port_id, "stopping port");
     let res = rte_eth_dev_stop(port_id);
     dpdk_error("rte_eth_dev_stop", Some(res))?;
 
@@ -210,6 +212,7 @@ unsafe fn initialize_dpdk_port(
         reserved_ptrs: [std::ptr::null_mut(), std::ptr::null_mut()],
     };
 
+    debug!(?rx_rings, ?tx_rings, "eth_dev_configure");
     let res = eth_dev_configure(port_id, rx_rings, tx_rings);
     ensure!(
         0 == res,
@@ -303,7 +306,7 @@ fn dpdk_init_helper(num_cores: usize) -> Result<(Vec<*mut rte_mempool>, u16)> {
     // SAFETY: only initializes things.
     unsafe {
         let nb_ports = rte_eth_dev_count_avail();
-        info!(?nb_ports, "DPDK available ports",);
+        info!(?nb_ports, "DPDK available ports");
         if nb_ports <= 0 {
             bail!("DPDK INIT: No ports available.");
         }
@@ -369,8 +372,21 @@ pub fn dpdk_init(eal_args: Vec<String>, num_cores: usize) -> Result<(Vec<*mut rt
 /// - num_cores: the number of mempools and queues to initialize. Cannot be greater that the number
 /// of lcores specified in eal_args.
 pub fn dpdk_configure(num_cores: usize) -> Result<(Vec<*mut rte_mempool>, u16)> {
+    // we might end up here on an un-registered thread (we might not have called eal_init on a
+    // different thread). so we need to check for this and register the thread if needed.
+    if LCORE_ID_ANY == get_lcore_id() {
+        debug!("registering dpdk rte thread");
+        let ok = unsafe { rte_thread_register() };
+        dpdk_error("rte_thread_register", Some(ok))?;
+    }
+
+    let this_lcore = get_lcore_id();
+    if LCORE_ID_ANY == this_lcore {
+        bail!("registering dpdk thread failed");
+    }
+
     let num_lcores = unsafe { rte_lcore_count() };
-    debug!(?num_lcores, "lcore info");
+    debug!(?num_lcores, ?this_lcore, "lcore info");
     ensure!(
         num_lcores >= num_cores as _,
         "Not enough EAL lcores for requested number of dpdk threads."

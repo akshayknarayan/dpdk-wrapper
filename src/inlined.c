@@ -17,11 +17,9 @@
 #include <rte_ethdev.h>
 #include <rte_ether.h>
 #include <rte_ip.h>
-#include <rte_malloc.h>
 #include <rte_mbuf.h>
 #include <rte_memcpy.h>
 #include <rte_udp.h>
-#include <rte_mempool.h>
 #include <rte_flow.h>
 #include <rte_thash.h>
 #define ARRAY_SIZE(arr) (sizeof(arr) / sizeof((arr)[0]))
@@ -704,14 +702,6 @@ int flush_flow_steering_(uint16_t dpdk_port_id) {
     return 0;
 }
 
-uint64_t rte_get_timer_cycles_() {
-    return rte_get_timer_cycles();
-}
-
-uint64_t rte_get_timer_hz_() {
-    return rte_get_timer_hz();
-}
-
 int affinitize_(uint32_t core) {
     int ok;
     rte_cpuset_t cpuset;
@@ -731,10 +721,6 @@ int affinitize_(uint32_t core) {
     return ok;
 }
 
-uint32_t lcore_count_() {
-    return rte_lcore_count();
-}
-
 uint32_t lcore_id_() {
     return rte_lcore_id();
 }
@@ -743,7 +729,7 @@ int get_lcore_map_(uint32_t *lcores, uint32_t lcore_arr_size) {
     uint32_t idx = 0;
     uint32_t num_lcores = rte_lcore_count();
     if (num_lcores > lcore_arr_size) {
-        return -1;
+        return -2;
     }
 
     int this_lcore = rte_lcore_id();

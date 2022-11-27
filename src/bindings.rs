@@ -79,7 +79,6 @@ extern "C" {
     pub fn clear_flow_steering_(dpdk_port_id: u16, flow_handle: *mut rte_flow) -> i32;
     pub fn flush_flow_steering_(dpdk_port_id: u16) -> i32;
     pub fn affinitize_(core: u32) -> i32;
-    pub fn lcore_count_() -> u32;
     pub fn lcore_id_() -> u32;
     pub fn get_lcore_map_(lcores: *mut u32, lcore_arr_size: u32) -> i32;
 }
@@ -197,14 +196,45 @@ pub unsafe fn affinitize(core: u32) -> i32 {
 
 #[inline]
 pub fn get_lcore_map() -> Result<Vec<u32>, color_eyre::eyre::Report> {
-    let num_lcores = unsafe { lcore_count_() };
+    let num_lcores = unsafe { rte_lcore_count() };
     let mut lcore_map = vec![0u32; num_lcores as _];
-    let ok = unsafe { get_lcore_map_(lcore_map.as_mut_ptr(), num_lcores) };
-    if ok < 0 {
-        Err(color_eyre::eyre::eyre!("Error getting lcore map: Incorrect lcore_count or could not get local lcore_id. Thread may not be registered with EAL."))
-    } else {
-        Ok(lcore_map)
+
+    //let ok = unsafe { get_lcore_map_(lcore_map.as_mut_ptr(), num_lcores) };
+    //if ok < 0 {
+    //    Err(color_eyre::eyre::eyre!("Error getting lcore map ({}): Incorrect lcore_count ({}) or could not get local lcore_id ({}). Thread may not be registered with EAL.", ok, num_lcores, get_lcore_id()))
+    //} else {
+    //    Ok(lcore_map)
+    //}
+
+    let mut idx = 0;
+    //let this_lcore = LCORE_ID_ANY;
+    //lcore_map[0] = this_lcore;
+    //idx += 1;
+    let mut curr_lcore = LCORE_ID_ANY;
+    curr_lcore = loop {
+        curr_lcore = unsafe { rte_get_next_lcore(curr_lcore, false as _, false as _) };
+        if unsafe { rte_lcore_is_enabled(curr_lcore) } > 0 {
+            break curr_lcore;
+        }
+    };
+    while curr_lcore != RTE_MAX_LCORE {
+        color_eyre::eyre::ensure!(
+            idx < lcore_map.len(),
+            "Error getting lcore map ({:?}): Incorrect lcore_count ({}) or could not get local lcore_id. Thread may not be registered with EAL.",
+            lcore_map, num_lcores
+        );
+        lcore_map[idx] = curr_lcore;
+        idx += 1;
+        curr_lcore = loop {
+            curr_lcore = unsafe { rte_get_next_lcore(curr_lcore, false as _, false as _) };
+            if curr_lcore == RTE_MAX_LCORE || unsafe { rte_lcore_is_enabled(curr_lcore) } > 0 {
+                break curr_lcore;
+            }
+        };
     }
+
+    lcore_map.truncate(idx);
+    Ok(lcore_map)
 }
 
 #[inline]

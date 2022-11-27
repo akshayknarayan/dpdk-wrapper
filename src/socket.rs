@@ -571,7 +571,10 @@ pub struct DpdkIoKernel {
 impl Drop for DpdkIoKernel {
     fn drop(&mut self) {
         unsafe {
-            rte_mempool_free(self.mbuf_pool);
+            // TODO freeing this mempool causes segfault sadness later.
+            //rte_mempool_free(self.mbuf_pool);
+            debug!(lcore_id = ?get_lcore_id(), "un-registering single-thread lcore");
+            rte_thread_unregister();
         }
     }
 }
@@ -803,7 +806,7 @@ impl DpdkIoKernel {
 
                     // write payload
                     let payload_slice = mbuf_slice!(tx_bufs[i], hdr_size, buf.len());
-                    rte_memcpy_wrapper(
+                    rte_memcpy_(
                         payload_slice.as_mut_ptr() as _,
                         buf.as_ptr() as _,
                         buf.len(),
