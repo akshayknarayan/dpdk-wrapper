@@ -115,6 +115,30 @@ impl DpdkConn {
         Ok(&mut msgs_buf[..slot_idx])
     }
 
+    /// Receive a batch of packets and drop any further packets that are pending (clear the queue).
+    pub async fn recv_async_batch_drain<'buf>(
+        &self,
+        msgs_buf: &'buf mut [Option<(SocketAddr, Vec<u8>)>],
+    ) -> Result<&'buf mut [Option<(SocketAddr, Vec<u8>)>]> {
+        if msgs_buf.is_empty() {
+            return Ok(msgs_buf);
+        }
+
+        msgs_buf[0] = Some(self.recv_async().await.wrap_err("channel receive")?);
+        let slots = msgs_buf[1..].iter_mut();
+        // drain() will move all packets in the channel into the returned Iterator, and .zip() will
+        // cause those packets to be dropped once we run out of slots and return.
+        let pkts = self.incoming_pkts.drain();
+        let num_pkts = pkts.len();
+        for (slot, Msg { addr, buf, port }) in slots.zip(pkts) {
+            assert_eq!(port, self.local_port.bound_port, "Port mismatched");
+            *slot = Some((SocketAddr::V4(addr), buf));
+        }
+
+        let ret_len = std::cmp::min(num_pkts, msgs_buf.len());
+        Ok(&mut msgs_buf[..ret_len])
+    }
+
     pub fn get_port(&self) -> u16 {
         self.local_port.bound_port
     }
@@ -222,6 +246,35 @@ impl BoundDpdkConn {
 
         Ok(&mut msgs_buf[..slot_idx])
     }
+
+    /// Receive a batch of packets and drop any further packets that are pending (clear the queue).
+    pub async fn recv_async_batch_drain<'buf>(
+        &self,
+        msgs_buf: &'buf mut [Option<(SocketAddr, Vec<u8>)>],
+    ) -> Result<&'buf mut [Option<(SocketAddr, Vec<u8>)>]> {
+        if msgs_buf.is_empty() {
+            return Ok(msgs_buf);
+        }
+
+        msgs_buf[0] = Some(
+            self.recv_async()
+                .await
+                .wrap_err("BoundDpdkConn first receive in batch")?,
+        );
+        let slots = msgs_buf[1..].iter_mut();
+        // drain() will move all packets in the channel into the returned Iterator, and .zip() will
+        // cause those packets to be dropped once we run out of slots and return.
+        let pkts = self.incoming_pkts.drain();
+        let num_pkts = pkts.len();
+        for (slot, Msg { addr, buf, port }) in slots.zip(pkts) {
+            assert_eq!(port, self.local_port.bound_port, "Port mismatched");
+            assert_eq!(addr, self.remote_addr, "Remote address mismatched");
+            *slot = Some((SocketAddr::V4(addr), buf));
+        }
+
+        let ret_len = std::cmp::min(num_pkts, msgs_buf.len());
+        Ok(&mut msgs_buf[..ret_len])
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -320,7 +373,7 @@ impl Debug for DpdkIoKernelHandle {
     }
 }
 
-const CHANNEL_SIZE: usize = 256;
+const CHANNEL_SIZE: usize = 64;
 
 impl DpdkIoKernelHandle {
     fn new(
