@@ -15,8 +15,11 @@ use color_eyre::{
 };
 use flume::{Receiver, Sender};
 use macaddr::MacAddr6 as MacAddress;
-use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
 use std::sync::{Arc, Mutex};
+use std::{
+    collections::VecDeque,
+    net::{Ipv4Addr, SocketAddr, SocketAddrV4},
+};
 use std::{fmt::Debug, mem::zeroed};
 use tracing::{debug, trace, warn};
 
@@ -136,6 +139,10 @@ impl DpdkConn {
         }
 
         let ret_len = std::cmp::min(num_pkts, msgs_buf.len());
+        if num_pkts > msgs_buf.len() {
+            debug!(dropped = ?(num_pkts - msgs_buf.len()), "drained recv queue");
+        }
+
         Ok(&mut msgs_buf[..ret_len])
     }
 
@@ -264,7 +271,12 @@ impl BoundDpdkConn {
         let slots = msgs_buf[1..].iter_mut();
         // drain() will move all packets in the channel into the returned Iterator, and .zip() will
         // cause those packets to be dropped once we run out of slots and return.
-        let pkts = self.incoming_pkts.drain();
+        let pkts = self
+            .incoming_pkts
+            .drain()
+            .collect::<VecDeque<_>>()
+            .into_iter()
+            .rev();
         let num_pkts = pkts.len();
         for (slot, Msg { addr, buf, port }) in slots.zip(pkts) {
             assert_eq!(port, self.local_port.bound_port, "Port mismatched");
@@ -273,6 +285,10 @@ impl BoundDpdkConn {
         }
 
         let ret_len = std::cmp::min(num_pkts, msgs_buf.len());
+        if num_pkts > msgs_buf.len() {
+            debug!(dropped = ?(num_pkts - msgs_buf.len()), "drained recv queue");
+        }
+
         Ok(&mut msgs_buf[..ret_len])
     }
 }
@@ -808,11 +824,12 @@ impl DpdkIoKernel {
 
             // 2. second, see if we have anything to send.
             let mut i = 0;
-            while let Ok(Msg {
+            let sends = self.outgoing_pkts.drain();
+            for Msg {
                 buf,
                 addr: to_addr,
                 port: src_port,
-            }) = self.outgoing_pkts.try_recv()
+            } in sends
             {
                 let to_ip = to_addr.ip();
                 let to_port = to_addr.port();
