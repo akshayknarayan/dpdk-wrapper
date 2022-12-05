@@ -8,7 +8,7 @@ use crate::{
     utils::{parse_cfg, AddressInfo, HeaderInfo, TOTAL_HEADER_SIZE},
     wrapper::*,
 };
-use ahash::AHashMap as HashMap;
+use ahash::HashMap;
 use color_eyre::{
     eyre::{bail, ensure, WrapErr},
     Result,

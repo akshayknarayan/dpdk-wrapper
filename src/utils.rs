@@ -1,4 +1,4 @@
-use ahash::AHashMap as HashMap;
+use ahash::HashMap;
 use byteorder::{ByteOrder, NetworkEndian};
 use color_eyre::{
     eyre::{bail, eyre, WrapErr},
