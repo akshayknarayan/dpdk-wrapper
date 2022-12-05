@@ -15,9 +15,9 @@ use color_eyre::{
 };
 use eui48::MacAddress;
 use flume::{Receiver, Sender};
-use std::mem::zeroed;
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
 use std::sync::{Arc, Mutex};
+use std::{fmt::Debug, mem::zeroed};
 use tracing::{debug, trace, warn};
 
 /// A message to/from DPDK.
@@ -118,7 +118,7 @@ impl DpdkConn {
 
 struct BoundPort {
     bound_port: u16,
-    ports: Arc<Mutex<PortManager>>,
+    ports: Arc<PortManager>,
 }
 
 impl std::fmt::Debug for BoundPort {
@@ -130,7 +130,7 @@ impl std::fmt::Debug for BoundPort {
 impl Drop for BoundPort {
     fn drop(&mut self) {
         // put the port back
-        self.ports.lock().unwrap().release(self.bound_port);
+        self.ports.release(self.bound_port);
     }
 }
 
@@ -230,7 +230,7 @@ impl Default for PortState {
 }
 
 #[derive(Debug)]
-struct PortManager(HashMap<u16, PortState>);
+struct PortManager(HashMap<u16, Mutex<PortState>>);
 
 impl Default for PortManager {
     fn default() -> Self {
@@ -239,16 +239,20 @@ impl Default for PortManager {
 }
 
 impl PortManager {
-    fn bind_exclusive(&mut self, port: Option<u16>) -> Result<u16> {
+    fn bind_exclusive(&self, port: Option<u16>) -> Result<u16> {
         for cand_port in port.map_or(1024u16..=65535, |p| p..=p) {
-            match self.0.get_mut(&cand_port) {
-                None => bail!("Unregistered port {:?}", cand_port),
-                Some(ps @ PortState::Free) => {
+            let ps = self
+                .0
+                .get(&cand_port)
+                .ok_or(eyre!("Unregistered port {}", cand_port))?;
+            let mut ps_g = ps.lock().unwrap();
+            match &*ps_g {
+                PortState::Free => {
                     debug!(?port, ?cand_port, "setting exclusive port");
-                    *ps = PortState::Exclusive;
+                    *ps_g = PortState::Exclusive;
                     return Ok(cand_port);
                 }
-                Some(x) => {
+                x => {
                     debug!(?port, ?cand_port, ?x, "port not free");
                 }
             }
@@ -258,26 +262,31 @@ impl PortManager {
     }
 
     fn bind_non_exclusive(
-        &mut self,
+        &self,
         port: u16,
     ) -> Result<(Receiver<BoundDpdkConn>, Option<Sender<BoundDpdkConn>>)> {
-        match self.0.get_mut(&port) {
-            None => bail!("Unregistered port {:?}", port),
-            Some(ps @ PortState::Free) => {
+        let ps = self
+            .0
+            .get(&port)
+            .ok_or(eyre!("Unregistered port {:?}", port))?;
+        let mut ps_g = ps.lock().unwrap();
+        match &*ps_g {
+            PortState::Free => {
                 let (accept_s, accept_r) = flume::bounded(16);
-                *ps = PortState::NonExclusive(accept_r.clone());
+                *ps_g = PortState::NonExclusive(accept_r.clone());
                 Ok((accept_r, Some(accept_s)))
             }
-            Some(PortState::NonExclusive(ref r)) => Ok((r.clone(), None)),
+            PortState::NonExclusive(ref r) => Ok((r.clone(), None)),
             _ => {
                 bail!("Requested port not available: {:?}", port);
             }
         }
     }
 
-    fn release(&mut self, port: u16) {
-        if let Some(ps) = self.0.get_mut(&port) {
-            *ps = PortState::Free;
+    fn release(&self, port: u16) {
+        if let Some(ps) = self.0.get(&port) {
+            let mut ps_g = ps.lock().unwrap();
+            *ps_g = PortState::Free;
         }
     }
 }
@@ -285,14 +294,20 @@ impl PortManager {
 /// Socket manager for [`DPDKIoKernel`].
 ///
 /// Created by [`DpdkIoKernel::new`]. Tracks available ports for sockets to use.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct DpdkIoKernelHandle {
-    ports: Arc<Mutex<PortManager>>,
+    ports: Arc<PortManager>,
     new_conns: Sender<Conn>,
     outgoing_pkts: Sender<Msg>,
 }
 
 const CHANNEL_SIZE: usize = 256;
+
+impl Debug for DpdkIoKernelHandle {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("DpdkIoKernelHandle").finish()
+    }
+}
 
 impl DpdkIoKernelHandle {
     fn new(new_conns: Sender<Conn>, outgoing_pkts: Sender<Msg>) -> Self {
@@ -306,7 +321,7 @@ impl DpdkIoKernelHandle {
     /// Make a new UDP socket.
     pub fn socket(&self, bind: Option<u16>) -> Result<DpdkConn> {
         // assign a port.
-        let port = self.ports.lock().unwrap().bind_exclusive(bind)?;
+        let port = self.ports.bind_exclusive(bind)?;
 
         let (incoming_s, incoming_r) = flume::bounded(CHANNEL_SIZE);
         let out_ch = self.outgoing_pkts.clone();
@@ -334,7 +349,7 @@ impl DpdkIoKernelHandle {
     /// `Receiver` that splits new connections with previously returned `Receiver`s.
     pub fn accept(&self, port: u16) -> Result<Receiver<BoundDpdkConn>> {
         // try to claim the port.
-        let (accept_r, sender_opt) = self.ports.lock().unwrap().bind_non_exclusive(port)?;
+        let (accept_r, sender_opt) = self.ports.bind_non_exclusive(port)?;
         if let Some(sender) = sender_opt {
             let bound_port = Arc::new(BoundPort {
                 bound_port: port,
