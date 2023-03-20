@@ -199,6 +199,7 @@ unsafe fn initialize_dpdk_port(
     };
 
     dpdk_ok!(eth_dev_configure(port_id, rx_rings, tx_rings));
+    debug!("eth_dev_configure ok");
 
     // can be -1, which == SOCKET_ID_ANY, so cast is ok
     static_assert!(SOCKET_ID_ANY == -1);
