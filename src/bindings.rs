@@ -42,7 +42,7 @@ extern "C" {
         udp_dst_port: *mut u16,
         payload_len: *mut usize,
     ) -> bool;
-    pub fn eth_dev_configure_(port_id: u16, rx_rings: u16, tx_rings: u16);
+    pub fn eth_dev_configure_(port_id: u16, rx_rings: u16, tx_rings: u16) -> i32;
     pub fn compute_flow_affinity_(
         local_ip: u32,
         remote_ip: u32,
@@ -152,8 +152,8 @@ pub unsafe fn parse_packet(
 }
 
 #[inline]
-pub unsafe fn eth_dev_configure(port_id: u16, rx_rings: u16, tx_rings: u16) {
-    eth_dev_configure_(port_id, rx_rings, tx_rings);
+pub unsafe fn eth_dev_configure(port_id: u16, rx_rings: u16, tx_rings: u16) -> i32 {
+    eth_dev_configure_(port_id, rx_rings, tx_rings)
 }
 
 use std::net::SocketAddrV4;

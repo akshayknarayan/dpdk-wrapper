@@ -198,7 +198,7 @@ unsafe fn initialize_dpdk_port(
         reserved_ptrs: [std::ptr::null_mut(), std::ptr::null_mut()],
     };
 
-    eth_dev_configure(port_id, rx_rings, tx_rings);
+    dpdk_ok!(eth_dev_configure(port_id, rx_rings, tx_rings));
 
     // can be -1, which == SOCKET_ID_ANY, so cast is ok
     static_assert!(SOCKET_ID_ANY == -1);

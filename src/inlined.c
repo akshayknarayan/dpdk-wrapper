@@ -137,7 +137,7 @@ static uint8_t sym_rss_key[] = {
     0x6D, 0x5A, 0x6D, 0x5A, 0x6D, 0x5A, 0x6D, 0x5A,
 };
 
-void eth_dev_configure_(uint16_t port_id, uint16_t rx_rings, uint16_t tx_rings) {
+int eth_dev_configure_(uint16_t port_id, uint16_t rx_rings, uint16_t tx_rings) {
 	struct rte_fdir_conf fdir_conf = {
 		.mode = RTE_FDIR_MODE_PERFECT,
 		.pballoc = RTE_FDIR_PBALLOC_64K,
@@ -179,12 +179,19 @@ void eth_dev_configure_(uint16_t port_id, uint16_t rx_rings, uint16_t tx_rings) 
     port_conf.txmode.mq_mode = ETH_MQ_TX_NONE;
 
     printf("port_id: %u, rx_rings; %u, tx_rings: %u\n", port_id, rx_rings, tx_rings);
-    rte_eth_dev_configure(port_id, rx_rings, tx_rings, &port_conf);
+    int ret = rte_eth_dev_configure(port_id, rx_rings, tx_rings, &port_conf);
+    if (ret != 0) {
+        printf("Unable to configure eth device: %u: %s\n", -ret, rte_strerror(-ret));
+        return ret;
+    }
 
-    int ret = rte_eth_stats_reset(port_id);
+    ret = rte_eth_stats_reset(port_id);
     if (ret != 0) {
         printf("Unable to reset ethdev stats: %u: %s\n", -ret, rte_strerror(-ret));
+        return ret;
     }
+
+    return 0;
 }
 
 /**
