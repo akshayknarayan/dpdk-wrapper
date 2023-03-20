@@ -13,8 +13,8 @@ use color_eyre::{
     eyre::{bail, eyre, WrapErr},
     Result,
 };
-use eui48::MacAddress;
 use flume::{Receiver, Sender};
+use macaddr::MacAddr6 as MacAddress;
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
 use std::sync::{Arc, Mutex};
 use std::{fmt::Debug, mem::zeroed};
@@ -520,7 +520,7 @@ impl DpdkIoKernel {
 
         // what is my ethernet address (rte_ether_addr struct)
         let my_eth = get_my_macaddr(port)?;
-        let eth_addr = MacAddress::from_bytes(&my_eth.addr_bytes).wrap_err("Parse mac address")?;
+        let eth_addr = my_eth.addr_bytes.into();
 
         // make connection tracking state.
         let (new_conns_s, new_conns_r) = flume::unbounded();
@@ -557,7 +557,7 @@ impl DpdkIoKernel {
         let mut tx_bufs: [*mut rte_mbuf; RECEIVE_BURST_SIZE as usize] = unsafe { zeroed() };
 
         let rte_eth_addr = rte_ether_addr {
-            addr_bytes: self.eth_addr.to_array(),
+            addr_bytes: self.eth_addr.into_array(),
         };
 
         let octets = self.ip_addr.octets();
@@ -593,7 +593,7 @@ impl DpdkIoKernel {
                 // opportunistically update arp
                 self.arp_table
                     .entry(pkt_src_ip)
-                    .or_insert_with(|| MacAddress::from_bytes(&src_ether.addr_bytes).unwrap());
+                    .or_insert_with(|| src_ether.addr_bytes.into());
 
                 let mut remove = false;
                 match self.conns.get_mut(&dst_port) {

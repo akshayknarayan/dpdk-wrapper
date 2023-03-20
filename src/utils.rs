@@ -4,7 +4,7 @@ use color_eyre::{
     eyre::{bail, eyre, WrapErr},
     Result,
 };
-use eui48::MacAddress;
+use macaddr::MacAddr6 as MacAddress;
 use std::convert::{TryFrom, TryInto};
 use std::fs::read_to_string;
 use std::net::Ipv4Addr;
