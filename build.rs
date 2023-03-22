@@ -29,7 +29,7 @@ fn main() {
         panic!("Failed to build DPDK");
     }
 
-    let dpdk_install = dpdk_dir.join("install");
+    let dpdk_install = dpdk_dir.join("build");
     let pkg_config_path = dpdk_install.join("lib/x86_64-linux-gnu/pkgconfig");
 
     let cflags_bytes = Command::new("pkg-config")

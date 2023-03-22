@@ -1,15 +1,10 @@
 #!/bin/bash
 # this script builds DPDK using meson and ninja
-# builds into DPDK/build
-# installs into DPDK/install
 DPDK=$1 # has to be a full path
 pushd $DPDK
-INSTALL_DIR="$DPDK/install"
-meson --prefix=$INSTALL_DIR build 
-pushd build
-if ninja | grep -vq "no work to do"; then
-  echo "installing"
-  ninja install
-fi
-popd
+meson build
+meson configure -Ddisable_drivers=net/mlx4,common/mlx4 build
+meson configure -Dprefix=$DPDK/build build
+ninja -C build
+ninja -C build install
 popd
