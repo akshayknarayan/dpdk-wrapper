@@ -167,7 +167,7 @@ pub fn parse_cfg(
             .as_str()
             .ok_or_else(|| eyre!("ip value should be a string: {:?}", my_ip))?
             .parse()
-            .wrap_err(eyre!("tried to parse {:?} as an IPv4 address", my_ip))?;
+            .wrap_err_with(|| eyre!("tried to parse {:?} as an IPv4 address", my_ip))?;
 
         let arp = tab
             .remove("arp")

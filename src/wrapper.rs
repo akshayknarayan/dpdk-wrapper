@@ -58,7 +58,7 @@ macro_rules! dpdk_check_not_failed (
 
 macro_rules! dpdk_ok (
     ($x: ident ($($arg: expr),*)) => {
-        dpdk_check(stringify!($x), $x($($arg),*), false).wrap_err(eyre!("Error running dpdk function {}", stringify!($x)))?
+        dpdk_check(stringify!($x), $x($($arg),*), false).wrap_err_with(|| eyre!("Error running dpdk function {}", stringify!($x)))?
     };
     ($x: ident ($($arg: expr),*), $y: ident ($($arg2: expr),*)) => {
         match dpdk_check(stringify!($x), $x($($arg),*)) {
