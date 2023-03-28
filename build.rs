@@ -4,24 +4,27 @@ use std::fs::canonicalize;
 use std::path::Path;
 use std::process::Command;
 
-#[cfg(all(feature = "xl710_intel", feature = "cx3_mlx"))]
-std::compile_error!("exactly one of xl710_intel or cx3_mlx is required");
-
-#[cfg(not(any(feature = "xl710_intel", feature = "cx3_mlx")))]
-std::compile_error!("exactly one of xl710_intel or cx3_mlx is required");
-
 fn main() {
     // Following https://github.com/sujayakar/dpdk-rs/blob/main/build.rs
     let cargo_manifest_dir = env::var("CARGO_MANIFEST_DIR").unwrap();
     let cargo_dir = Path::new(&cargo_manifest_dir);
     // rerun if inlined.c changes
     println!("cargo:rerun-if-changed=src/inlined.c",);
+
+    // build DPDK
     let header_path = Path::new(&cargo_dir).join("inc").join("dpdk-headers.h");
     println!("cargo:warning=Building DPDK...");
     let dpdk_path = canonicalize(cargo_dir.join("dpdk")).unwrap();
     let dpdk_dir = dpdk_path.as_path();
     if !Command::new("./build-dpdk.sh")
-        .args([dpdk_dir.to_str().unwrap()])
+        .args([
+            dpdk_dir.to_str().unwrap(),
+            if cfg!(feature = "cx4_mlx") {
+                "net/mlx4,common/mlx4"
+            } else {
+                ""
+            },
+        ])
         .status()
         .unwrap_or_else(|e| panic!("Failed to build DPDK: {:?}", e))
         .success()
@@ -113,6 +116,8 @@ fn main() {
         compiler.flag("-D__xl710_intel__");
     } else if cfg!(feature = "cx3_mlx") {
         compiler.flag("-D__cx3_mlx__");
+    } else if cfg!(feature = "cx4_mlx") {
+        compiler.flag("-D__cx4_mlx__");
     } else {
         unreachable!("exactly one of xl710_intel or cx3_mlx is required");
     }

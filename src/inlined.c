@@ -138,6 +138,12 @@ static uint8_t sym_rss_key[] = {
 };
 
 int eth_dev_configure_(uint16_t port_id, uint16_t rx_rings, uint16_t tx_rings) {
+    struct rte_eth_dev_info dev_info = {};
+    rte_eth_dev_info_get(port_id, &dev_info);
+    rte_eth_dev_set_mtu(port_id, RX_PACKET_LEN);
+
+    struct rte_eth_conf port_conf = {};
+
 	struct rte_fdir_conf fdir_conf = {
 		.mode = RTE_FDIR_MODE_PERFECT,
 		.pballoc = RTE_FDIR_PBALLOC_64K,
@@ -160,18 +166,12 @@ int eth_dev_configure_(uint16_t port_id, uint16_t rx_rings, uint16_t tx_rings) {
 		},
 		.drop_queue = 127,
 	};
-
-    struct rte_eth_dev_info dev_info = {};
-    rte_eth_dev_info_get(port_id, &dev_info);
-    rte_eth_dev_set_mtu(port_id, RX_PACKET_LEN);
-    struct rte_eth_conf port_conf = {};
-
     port_conf.fdir_conf = fdir_conf;
 
     port_conf.rxmode.max_rx_pkt_len = RX_PACKET_LEN;
 
     port_conf.rxmode.offloads = DEV_RX_OFFLOAD_JUMBO_FRAME | DEV_RX_OFFLOAD_IPV4_CKSUM | DEV_RX_OFFLOAD_RSS_HASH;
-    port_conf.rxmode.mq_mode = ETH_MQ_RX_RSS | ETH_MQ_RX_RSS_FLAG;
+    port_conf.rxmode.mq_mode = ETH_MQ_RX_RSS;
 
     port_conf.rx_adv_conf.rss_conf.rss_hf = ETH_RSS_NONFRAG_IPV4_UDP;
 
@@ -235,15 +235,14 @@ static const struct rte_flow_item_ipv4 ipv4_any_addr = {
 };
 
 static const struct rte_flow_item_eth eth_proto_mask = {
-#ifdef __xl710_intel__
-    .dst.addr_bytes = "\x00\x00\x00\x00\x00\x00",
-    .src.addr_bytes = "\x00\x00\x00\x00\x00\x00",
-    .type = RTE_BE16(0xffff),
-#endif
 #ifdef __cx3_mlx__
     .dst.addr_bytes = "\xff\xff\xff\xff\xff\xff",
     .src.addr_bytes = "\x00\x00\x00\x00\x00\x00",
     .type = RTE_BE16(0x0),
+#else
+    .dst.addr_bytes = "\x00\x00\x00\x00\x00\x00",
+    .src.addr_bytes = "\x00\x00\x00\x00\x00\x00",
+    .type = RTE_BE16(0xffff),
 #endif
 };
 
@@ -295,9 +294,8 @@ static int config_udp_dst_port_match_rule(
     }
 
     memcpy(&(eth_proto_ipv4->dst), &local_eth_addr, sizeof(struct rte_ether_addr));
-#endif
-#ifdef __xl710_intel__
-    // on I40E matching on just EtherType seems to be fine.
+#else
+    // on I40E and mlx5 matching on just EtherType seems to be fine.
     eth_proto_ipv4->type = RTE_BE16(RTE_ETHER_TYPE_IPV4);
 #endif
 
@@ -433,9 +431,6 @@ int setup_flow_steering_rss_(
 
     rss_action.queue_num = num_queues;
     rss_action.queue = dpdk_queue_ids;
-#ifdef __xl710_intel__
-    struct rte_flow_item patterns[] = { { .type = RTE_FLOW_ITEM_TYPE_END } };
-#endif
 #ifdef __cx3_mlx__
     int ret;
     struct rte_flow_item patterns[4] = {};
@@ -446,6 +441,9 @@ int setup_flow_steering_rss_(
     if (ret != 0) {
         return ret;
     }
+#else
+    // on I40E and mlx5, don't attempt matching rules on RSS rules; it seems to not work.
+    struct rte_flow_item patterns[] = { { .type = RTE_FLOW_ITEM_TYPE_END } };
 #endif
 
     return validate_and_install(dpdk_port_id, &attr, patterns, actions, flow_handle_out);

@@ -6,6 +6,7 @@ edition = "2021"
 [features]
 xl710_intel = []
 cx3_mlx = []
+cx4_mlx = []
 
 [dependencies]
 color-eyre = "0.6"
