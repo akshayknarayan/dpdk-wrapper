@@ -50,9 +50,22 @@ extern "C" {
         remote_port: u16,
         num_queues: usize,
     ) -> u32;
-    pub fn setup_flow_steering_solo_(
+    pub fn setup_flow_steering_solo_local_port_(
         dpdk_port_id: u16,
         dst_port: u16,
+        dpdk_queue_id: u16,
+        flow_handle_out: *mut *mut rte_flow,
+    ) -> i32;
+    pub fn setup_flow_steering_solo_remote_port_(
+        dpdk_port_id: u16,
+        remote_port: u16,
+        dpdk_queue_id: u16,
+        flow_handle_out: *mut *mut rte_flow,
+    ) -> i32;
+    pub fn setup_flow_steering_solo_port_pair_(
+        dpdk_port_id: u16,
+        dst_port: u16,
+        remote_port: u16,
         dpdk_queue_id: u16,
         flow_handle_out: *mut *mut rte_flow,
     ) -> i32;

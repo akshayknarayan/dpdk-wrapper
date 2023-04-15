@@ -227,6 +227,15 @@ static const struct rte_flow_item_udp udp_dst_port_mask = {
 	.hdr.dst_port = RTE_BE16(0xffff),
 };
 
+static const struct rte_flow_item_udp udp_src_port_mask = {
+	.hdr.src_port = RTE_BE16(0xffff),
+};
+
+static const struct rte_flow_item_udp udp_src_dst_port_mask = {
+	.hdr.src_port = RTE_BE16(0xffff),
+	.hdr.dst_port = RTE_BE16(0xffff),
+};
+
 static const struct rte_flow_item_ipv4 ipv4_any_addr = {
 	.hdr = {
 		.src_addr = 0,
@@ -246,32 +255,23 @@ static const struct rte_flow_item_eth eth_proto_mask = {
 #endif
 };
 
-/* Helper function to construct UDP dst port matching rule.
- * @dst_port: the destination UDP port to match on.
- * @attr_out: where to put the initialized `rte_flow_attr`.
- * @pattern_out: where to put the initialized `rte_flow_item[]` containing the pattern to match. 
- *               this is a length-4 `rte_flow_item` array.
- *
- * Returns 0 on success and nonzero if arguments are malformed (-EINVAL) or `rte_eth_macaddr_get` fails.
- */
-static int config_udp_dst_port_match_rule(
-    uint16_t dst_port,
+static int config_udp_match_rule_helper(
     uint16_t dpdk_port_id,
     struct rte_flow_item_eth *eth_proto_ipv4,
-    struct rte_flow_item_udp *udp_flow,
     struct rte_flow_attr *attr_out,
-    struct rte_flow_item (*pattern_out)[4]
+    uint32_t priority
 ) {
-    if (attr_out == NULL || pattern_out == NULL) {
+    if (attr_out == NULL) {
         return -EINVAL;
     }
 
 	struct rte_flow_attr attr = {
 		.group = 0,
-		.priority = 0,
+		.priority = priority,
 		.ingress = 1,
 	};
 
+    *attr_out = attr;
 #ifdef __cx3_mlx__
     // We don't actually care about matching on the local eth address. But:
     // (1) if we match on nothing, like so:
@@ -299,6 +299,34 @@ static int config_udp_dst_port_match_rule(
     eth_proto_ipv4->type = RTE_BE16(RTE_ETHER_TYPE_IPV4);
 #endif
 
+    return 0;
+}
+
+/* Helper function to construct UDP dst port matching rule.
+ * @dst_port: the local destination UDP port to match on.
+ * @attr_out: where to put the initialized `rte_flow_attr`.
+ * @pattern_out: where to put the initialized `rte_flow_item[]` containing the pattern to match. 
+ *               this is a length-4 `rte_flow_item` array.
+ *
+ * Returns 0 on success and nonzero if arguments are malformed (-EINVAL) or `rte_eth_macaddr_get` fails.
+ */
+static int config_udp_dst_port_match_rule(
+    uint16_t dst_port,
+    uint16_t dpdk_port_id,
+    struct rte_flow_item_eth *eth_proto_ipv4,
+    struct rte_flow_item_udp *udp_flow,
+    struct rte_flow_attr *attr_out,
+    struct rte_flow_item (*pattern_out)[4]
+) {
+    if (pattern_out == NULL) {
+        return -EINVAL;
+    }
+
+    int ok = config_udp_match_rule_helper(dpdk_port_id, eth_proto_ipv4, attr_out, 2);
+    if (ok < 0) {
+        return ok;
+    }
+
 	(udp_flow->hdr).dst_port = RTE_BE16(dst_port);
 
 	struct rte_flow_item patterns[] = {
@@ -323,7 +351,115 @@ static int config_udp_dst_port_match_rule(
 		},
 	};
 
-    *attr_out = attr;
+    memcpy(pattern_out, &patterns, 4 * sizeof(struct rte_flow_item));
+    return 0;
+}
+
+/* Helper function to construct UDP src port matching rule.
+ * @src_port: the remote source UDP port to match on.
+ * @attr_out: where to put the initialized `rte_flow_attr`.
+ * @pattern_out: where to put the initialized `rte_flow_item[]` containing the pattern to match. 
+ *               this is a length-4 `rte_flow_item` array.
+ *
+ * Returns 0 on success and nonzero if arguments are malformed (-EINVAL) or `rte_eth_macaddr_get` fails.
+ */
+static int config_udp_src_port_match_rule(
+    uint16_t src_port,
+    uint16_t dpdk_port_id,
+    struct rte_flow_item_eth *eth_proto_ipv4,
+    struct rte_flow_item_udp *udp_flow,
+    struct rte_flow_attr *attr_out,
+    struct rte_flow_item (*pattern_out)[4]
+) {
+    if (pattern_out == NULL) {
+        return -EINVAL;
+    }
+
+    int ok = config_udp_match_rule_helper(dpdk_port_id, eth_proto_ipv4, attr_out, 1);
+    if (ok < 0) {
+        return ok;
+    }
+
+	(udp_flow->hdr).src_port = RTE_BE16(src_port);
+
+	struct rte_flow_item patterns[] = {
+		{
+			.type = RTE_FLOW_ITEM_TYPE_ETH,
+            .mask = &eth_proto_mask,
+            .spec = eth_proto_ipv4,
+		},
+		{
+			.type = RTE_FLOW_ITEM_TYPE_IPV4,
+			.mask = &ipv4_any_addr,
+			.spec = &ipv4_any_addr,
+		},
+		{
+			.type = RTE_FLOW_ITEM_TYPE_UDP,
+			.mask = &udp_src_port_mask,
+			.spec = udp_flow,
+			.last = NULL, /* not a range */
+		},
+		{
+			.type = RTE_FLOW_ITEM_TYPE_END,
+		},
+	};
+
+    memcpy(pattern_out, &patterns, 4 * sizeof(struct rte_flow_item));
+    return 0;
+}
+
+/* Helper function to construct UDP (src,dst) port matching rule.
+ * @src_port: the remote source UDP port to match on.
+ * @dst_port: the local dest UDP port to match on.
+ * @attr_out: where to put the initialized `rte_flow_attr`.
+ * @pattern_out: where to put the initialized `rte_flow_item[]` containing the pattern to match. 
+ *               this is a length-4 `rte_flow_item` array.
+ *
+ * Returns 0 on success and nonzero if arguments are malformed (-EINVAL) or `rte_eth_macaddr_get` fails.
+ */
+static int config_udp_port_pair_match_rule(
+    uint16_t src_port,
+    uint16_t dst_port,
+    uint16_t dpdk_port_id,
+    struct rte_flow_item_eth *eth_proto_ipv4,
+    struct rte_flow_item_udp *udp_flow,
+    struct rte_flow_attr *attr_out,
+    struct rte_flow_item (*pattern_out)[4]
+) {
+    if (pattern_out == NULL) {
+        return -EINVAL;
+    }
+
+    int ok = config_udp_match_rule_helper(dpdk_port_id, eth_proto_ipv4, attr_out, 0);
+    if (ok < 0) {
+        return ok;
+    }
+
+	(udp_flow->hdr).src_port = RTE_BE16(src_port);
+	(udp_flow->hdr).dst_port = RTE_BE16(dst_port);
+
+	struct rte_flow_item patterns[] = {
+		{
+			.type = RTE_FLOW_ITEM_TYPE_ETH,
+            .mask = &eth_proto_mask,
+            .spec = eth_proto_ipv4,
+		},
+		{
+			.type = RTE_FLOW_ITEM_TYPE_IPV4,
+			.mask = &ipv4_any_addr,
+			.spec = &ipv4_any_addr,
+		},
+		{
+			.type = RTE_FLOW_ITEM_TYPE_UDP,
+			.mask = &udp_src_dst_port_mask,
+			.spec = udp_flow,
+			.last = NULL, /* not a range */
+		},
+		{
+			.type = RTE_FLOW_ITEM_TYPE_END,
+		},
+	};
+
     memcpy(pattern_out, &patterns, 4 * sizeof(struct rte_flow_item));
     return 0;
 }
@@ -368,7 +504,7 @@ static int validate_and_install(
  *
  * Returns 0 if no error.
  */
-int setup_flow_steering_solo_(
+int setup_flow_steering_solo_local_port_(
     uint16_t dpdk_port_id,
     uint16_t dst_port,
     uint16_t dpdk_queue_id,
@@ -381,6 +517,87 @@ int setup_flow_steering_solo_(
     struct rte_flow_item_udp udp_pattern = {};
 
     ret = config_udp_dst_port_match_rule(dst_port, dpdk_port_id, &eth_pattern, &udp_pattern, &attr, &patterns);
+    if (ret != 0) {
+        return ret;
+    }
+
+	struct rte_flow_action_queue queue_action = {
+		.index = dpdk_queue_id,
+	};
+
+    struct rte_flow_action actions[] = {
+		{
+			.type = RTE_FLOW_ACTION_TYPE_QUEUE,
+			.conf = &queue_action,
+		},
+		{ .type = RTE_FLOW_ACTION_TYPE_END },
+	};
+
+    return validate_and_install(dpdk_port_id, &attr, patterns, actions, flow_handle_out);
+}
+
+/** Use DPDK `rte_flow` API to configure steering for the flow to the given queue.
+ * @dpdk_port_id: the DPDK port to act on.
+ * @dst_port: the local destination UDP port to match on.
+ * @dpdk_queue_id: the queue id to steer the flow's packets to.
+ * @flow_handle_out: a returned handle to the flow object which can be used to delete the steering rule.
+ *
+ * Returns 0 if no error.
+ */
+int setup_flow_steering_solo_remote_port_(
+    uint16_t dpdk_port_id,
+    uint16_t src_port,
+    uint16_t dpdk_queue_id,
+	struct rte_flow **flow_handle_out
+) {
+	int ret;
+    struct rte_flow_attr attr = {};
+    struct rte_flow_item patterns[4] = {};
+    struct rte_flow_item_eth eth_pattern = {};
+    struct rte_flow_item_udp udp_pattern = {};
+
+    ret = config_udp_src_port_match_rule(src_port, dpdk_port_id, &eth_pattern, &udp_pattern, &attr, &patterns);
+    if (ret != 0) {
+        return ret;
+    }
+
+	struct rte_flow_action_queue queue_action = {
+		.index = dpdk_queue_id,
+	};
+
+    struct rte_flow_action actions[] = {
+		{
+			.type = RTE_FLOW_ACTION_TYPE_QUEUE,
+			.conf = &queue_action,
+		},
+		{ .type = RTE_FLOW_ACTION_TYPE_END },
+	};
+
+    return validate_and_install(dpdk_port_id, &attr, patterns, actions, flow_handle_out);
+}
+
+/** Use DPDK `rte_flow` API to configure steering for the flow to the given queue.
+ * @dpdk_port_id: the DPDK port to act on.
+ * @dst_port: the local destination UDP port to match on.
+ * @dpdk_queue_id: the queue id to steer the flow's packets to.
+ * @flow_handle_out: a returned handle to the flow object which can be used to delete the steering rule.
+ *
+ * Returns 0 if no error.
+ */
+int setup_flow_steering_solo_port_pair_(
+    uint16_t dpdk_port_id,
+    uint16_t src_port,
+    uint16_t dst_port,
+    uint16_t dpdk_queue_id,
+	struct rte_flow **flow_handle_out
+) {
+	int ret;
+    struct rte_flow_attr attr = {};
+    struct rte_flow_item patterns[4] = {};
+    struct rte_flow_item_eth eth_pattern = {};
+    struct rte_flow_item_udp udp_pattern = {};
+
+    ret = config_udp_port_pair_match_rule(src_port, dst_port, dpdk_port_id, &eth_pattern, &udp_pattern, &attr, &patterns);
     if (ret != 0) {
         return ret;
     }
@@ -417,7 +634,7 @@ int setup_flow_steering_rss_(
 ) {
 	struct rte_flow_attr attr = {
 		.group = 0,
-		.priority = 0,
+		.priority = 3,
 		.ingress = 1,
 	};
     struct rte_flow_action_rss rss_action = {};

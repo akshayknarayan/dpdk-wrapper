@@ -454,7 +454,7 @@ pub unsafe fn tx_burst(
 #[must_use]
 pub struct FlowSteeringHandle {
     dpdk_port: u16,
-    udp_port: u16,
+    match_rule: SteeringMatchRule,
     handle: *mut rte_flow,
 }
 
@@ -477,23 +477,75 @@ impl Drop for FlowSteeringHandle {
             }
         }
 
-        debug!(?self.udp_port, "Cleared flow steering rule");
+        debug!(?self.match_rule, "Cleared flow steering rule");
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum SteeringMatchRule {
+    LocalDstOnly(u16),
+    RemoteSrcOnly(u16),
+    LocalAndRemote {
+        local_dst_port: u16,
+        remote_src_port: u16,
+    },
+}
+
+impl SteeringMatchRule {
+    pub fn local_port(&self) -> Option<u16> {
+        match self {
+            SteeringMatchRule::LocalDstOnly(p)
+            | SteeringMatchRule::LocalAndRemote {
+                local_dst_port: p, ..
+            } => Some(*p),
+            _ => None,
+        }
+    }
+
+    pub fn remote_port(&self) -> Option<u16> {
+        match self {
+            SteeringMatchRule::RemoteSrcOnly(p)
+            | SteeringMatchRule::LocalAndRemote {
+                remote_src_port: p, ..
+            } => Some(*p),
+            _ => None,
+        }
     }
 }
 
 #[inline]
 pub unsafe fn setup_flow_steering_solo(
     dpdk_port_id: u16,
-    local_dst_port: u16,
+    port_match: SteeringMatchRule,
     dst_queue_id: u16,
 ) -> Result<FlowSteeringHandle, Report> {
     let mut flow_handle = std::mem::MaybeUninit::uninit();
-    let err = setup_flow_steering_solo_(
-        dpdk_port_id,
-        local_dst_port,
-        dst_queue_id,
-        flow_handle.as_mut_ptr(),
-    );
+
+    let err = match port_match {
+        SteeringMatchRule::LocalDstOnly(local_dst_port) => setup_flow_steering_solo_local_port_(
+            dpdk_port_id,
+            local_dst_port,
+            dst_queue_id,
+            flow_handle.as_mut_ptr(),
+        ),
+        SteeringMatchRule::RemoteSrcOnly(remote_src_port) => setup_flow_steering_solo_local_port_(
+            dpdk_port_id,
+            remote_src_port,
+            dst_queue_id,
+            flow_handle.as_mut_ptr(),
+        ),
+        SteeringMatchRule::LocalAndRemote {
+            local_dst_port,
+            remote_src_port,
+        } => setup_flow_steering_solo_port_pair_(
+            dpdk_port_id,
+            local_dst_port,
+            remote_src_port,
+            dst_queue_id,
+            flow_handle.as_mut_ptr(),
+        ),
+    };
+
     if err != 0 {
         let err_str = std::ffi::CStr::from_ptr(rte_strerror(err as _))
             .to_str()
@@ -505,7 +557,7 @@ pub unsafe fn setup_flow_steering_solo(
     ensure!(!flow_handle.is_null(), "flow handle not initialized");
     Ok(FlowSteeringHandle {
         dpdk_port: dpdk_port_id,
-        udp_port: local_dst_port,
+        match_rule: port_match,
         handle: flow_handle,
     })
 }
@@ -541,7 +593,7 @@ pub unsafe fn setup_flow_steering_rss(
 
     Ok(FlowSteeringHandle {
         dpdk_port: dpdk_port_id,
-        udp_port: local_dst_port,
+        match_rule: SteeringMatchRule::LocalDstOnly(local_dst_port),
         handle: flow_handle,
     })
 }

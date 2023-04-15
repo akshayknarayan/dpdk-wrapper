@@ -244,7 +244,7 @@ impl PortManager {
             let ps = self
                 .0
                 .get(&cand_port)
-                .ok_or(eyre!("Unregistered port {}", cand_port))?;
+                .ok_or_else(|| eyre!("Unregistered port {}", cand_port))?;
             let mut ps_g = ps.lock().unwrap();
             match &*ps_g {
                 PortState::Free => {
@@ -268,7 +268,7 @@ impl PortManager {
         let ps = self
             .0
             .get(&port)
-            .ok_or(eyre!("Unregistered port {:?}", port))?;
+            .ok_or_else(|| eyre!("Unregistered port {:?}", port))?;
         let mut ps_g = ps.lock().unwrap();
         match &*ps_g {
             PortState::Free => {
